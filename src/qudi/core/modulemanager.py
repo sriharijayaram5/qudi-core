@@ -25,11 +25,11 @@ import copy
 import weakref
 import fysom
 
-from typing import FrozenSet, Iterable
+from typing import FrozenSet, Iterable, Optional, Any, Union, Mapping, Dict
 from functools import partial
 from PySide2 import QtCore
 
-from qudi.util.mutex import RecursiveMutex   # provides access serialization between threads
+from qudi.util.mutex import Mutex   # provides access serialization between threads
 from qudi.core.logger import get_logger
 from qudi.core.servers import get_remote_module_instance
 from qudi.core.module import Base, get_module_app_data_path
@@ -41,7 +41,7 @@ class ModuleManager(QtCore.QObject):
     """
     """
     _instance = None  # Only class instance created will be stored here as weakref
-    _lock = RecursiveMutex()
+    _lock = Mutex()
 
     sigModuleStateChanged = QtCore.Signal(str, str, str)
     sigModuleAppDataChanged = QtCore.Signal(str, str, bool)
@@ -252,47 +252,34 @@ class ManagedModule(QtCore.QObject):
      object. Contains status properties and handles initialization, state transitions and
      connection of the module.
     """
-    sigStateChanged = QtCore.Signal(str, str, str)
-    sigAppDataChanged = QtCore.Signal(str, str, bool)
-
-    _lock = RecursiveMutex()  # Single mutex shared across all ManagedModule instances
+    sigStateChanged = QtCore.Signal(str, str, str)  # base, name, state
+    sigAppDataChanged = QtCore.Signal(str, str, bool)  # base, name, has_appdata
 
     __state_poll_interval = 1  # Max interval in seconds to poll module_state of remote modules
 
-    def __init__(self, qudi_main_ref, name, base, configuration):
-        if not isinstance(qudi_main_ref, weakref.ref):
-            raise TypeError('qudi_main_ref must be weakref to qudi main instance.')
+    def __init__(self,
+                 name: str,
+                 base: str,
+                 configuration: Mapping[str, Any],
+                 qudi_main_ref: weakref.ref,
+                 parent: Optional[QtCore.QObject] = None) -> None:
+        super().__init__(parent=parent)
         if not name or not isinstance(name, str):
             raise ValueError('Module name must be a non-empty string.')
-        if base not in ('gui', 'logic', 'hardware'):
-            raise ValueError('Module base must be one of ("gui", "logic", "hardware").')
-        if 'module.Class' not in configuration and 'remote_url' not in configuration:
-            raise ValueError(f'Module config entry must contain either "module.Class" or '
-                             f'"remote_url". None of them was found in config for module "{name}".')
-        if not isinstance(configuration.get('module.Class', ''), str):
-            raise TypeError(f'module.Class config entry of module "{name}" must be str type.')
-        if not isinstance(configuration.get('remote_url', ''), str):
-            raise TypeError(f'remote URL of module "{name}" must be of str type.')
-        if not isinstance(configuration.get('certfile', ''), str):
-            raise TypeError(
-                f'certfile config option of remotemodules module "{name}" must be of str type.'
-            )
-        if not isinstance(configuration.get('keyfile', ''), str):
-            raise TypeError(
-                f'keyfile config option of remotemodules module "{name}" must be of str type.'
-            )
-        if not isinstance(configuration.get('remoteaccess', False), bool):
-            raise TypeError(f'remoteaccess config option of remotemodules module "{name}" must be '
-                            f'of bool type.')
-
-        super().__init__()
+        if base not in ['gui', 'logic', 'hardware']:
+            raise ValueError('Module base must be one of ["gui", "logic", "hardware"].')
         if self.thread() is not QtCore.QCoreApplication.instance().thread():
             raise RuntimeError('ManagedModules can only be owned by the application main thread.')
 
-        self._qudi_main_ref = qudi_main_ref  # Weak reference to qudi main instance
+        self._lock = Mutex()
+
+        # Weak reference to qudi main instance
+        if not isinstance(qudi_main_ref, weakref.ref):
+            qudi_main_ref = weakref.ref(qudi_main_ref)
+        self._qudi_main_ref = qudi_main_ref
         self._name = name  # Each qudi module needs a unique string identifier
         self._base = base  # Remember qudi module base
-        self._instance = None  # Store the module instance later on
+        self._instance = None  # Holds the qudi module instance after loading the module
 
         # Sort out configuration dict
         cfg = copy.deepcopy(configuration)
@@ -300,7 +287,7 @@ class ManagedModule(QtCore.QObject):
         self._module, self._class = cfg.pop('module.Class', 'REMOTE.REMOTE').rsplit('.', 1)
         # Remember connections by name
         self._connect_cfg = cfg.pop('connect', dict())
-        # See if remotemodules access to this module is allowed (allowed by default)
+        # See if remotemodules access to this module is allowed (NOT allowed by default)
         self._allow_remote_access = cfg.pop('allow_remote', False)
         # Extract remote modules URL and certificate if this module is run on a remote machine
         self._remote_url = cfg.pop('remote_url', None)
@@ -322,77 +309,77 @@ class ManagedModule(QtCore.QObject):
         return self.instance
 
     @property
-    def name(self):
+    def name(self) -> str:
         return self._name
 
     @property
-    def module_base(self):
+    def module_base(self) -> str:
         return self._base
 
     @property
-    def class_name(self):
+    def class_name(self) -> str:
         return self._class
 
     @property
-    def module_name(self):
+    def module_name(self) -> str:
         return self._module
 
     @property
-    def options(self):
+    def options(self) -> Dict[str, Any]:
         return copy.deepcopy(self._options)
 
     @property
-    def instance(self):
-        with self._lock:
-            return self._instance
+    def instance(self) -> Base:
+        return self._instance
 
     @property
-    def status_file_path(self):
+    def status_file_path(self) -> str:
         return get_module_app_data_path(self.class_name, self.module_base, self.name)
 
     @property
-    def is_loaded(self):
-        with self._lock:
-            return self._instance is not None
+    def is_loaded(self) -> bool:
+        return self._instance is not None
 
     @property
-    def is_active(self):
-        with self._lock:
-            return self._instance is not None and self._instance.module_state() != 'deactivated'
+    def is_active(self) -> bool:
+        try:
+            return self._instance.module_state() != 'deactivated'
+        except AttributeError:
+            return False
 
     @property
-    def is_busy(self):
-        with self._lock:
-            return self.is_active and self._instance.module_state() != 'idle'
+    def is_busy(self) -> bool:
+        try:
+            return self._instance.module_state() not in ['idle', 'deactivated']
+        except AttributeError:
+            return False
 
     @property
-    def is_remote(self):
-        return bool(self._remote_url)
+    def is_remote(self) -> bool:
+        return self._remote_url is not None
 
     @property
-    def allow_remote_access(self):
+    def allow_remote_access(self) -> bool:
         return self._allow_remote_access
 
     @property
-    def remote_url(self):
+    def remote_url(self) -> Union[None, str]:
         return self._remote_url
 
     @property
-    def remote_key_path(self):
+    def remote_key_path(self) -> Union[None, str]:
         return self._remote_keyfile
 
     @property
-    def remote_cert_path(self):
+    def remote_cert_path(self) -> Union[None, str]:
         return self._remote_certfile
 
     @property
-    def state(self):
+    def state(self) -> str:
         try:
             return self._instance.module_state()
         except AttributeError:
             return 'not loaded'
-        except:
-            return 'BROKEN'
 
     @property
     def connection_cfg(self):
@@ -403,58 +390,43 @@ class ManagedModule(QtCore.QObject):
         return self._required_modules
 
     @required_modules.setter
-    def required_modules(self, module_iter):
-        for module in module_iter:
-            if not isinstance(module, weakref.ref):
-                raise TypeError('items in required_modules must be weakref.ref instances.')
-            if not isinstance(module(), ManagedModule):
-                if module() is None:
-                    logger.error(
-                        f'Dead weakref passed as required module to ManagedModule "{self._name}"'
-                    )
-                    return
-                raise TypeError('required_modules must be iterable of ManagedModule instances '
-                                '(or weakref to same instances)')
-        self._required_modules = frozenset(module_iter)
+    def required_modules(self, module_references: Iterable[weakref.ref]) -> None:
+        module_references = list(module_references)
+        if not all(isinstance(mod, weakref.ref) for mod in module_references):
+            raise TypeError('"required_modules" items must be weakref.ref instances')
+        if not all(isinstance(mod(), ManagedModule) for mod in module_references):
+            raise TypeError('"required_modules" references must point to ManagedModule instances')
+        self._required_modules = frozenset(module_references)
 
     @property
-    def dependent_modules(self):
+    def dependent_modules(self) -> FrozenSet[weakref.ref]:
         return self._dependent_modules
 
     @dependent_modules.setter
-    def dependent_modules(self, module_iter):
-        dep_modules = set()
-        for module in module_iter:
-            if not isinstance(module, weakref.ref):
-                raise TypeError('items in dependent_modules must be weakref.ref instances.')
-            if not isinstance(module(), ManagedModule):
-                if module() is None:
-                    logger.error(
-                        f'Dead weakref passed as dependent module to ManagedModule "{self._name}"'
-                    )
-                    return
-                raise TypeError('dependent_modules must be iterable of ManagedModule instances '
-                                '(or weakref to same instances)')
-            dep_modules.add(module)
-        self._dependent_modules = frozenset(dep_modules)
+    def dependent_modules(self, module_references: Iterable[weakref.ref]) -> None:
+        module_references = list(module_references)
+        if not all(isinstance(mod, weakref.ref) for mod in module_references):
+            raise TypeError('"dependent_modules" items must be weakref.ref instances')
+        if not all(isinstance(mod(), ManagedModule) for mod in module_references):
+            raise TypeError('"dependent_modules" references must point to ManagedModule instances')
+        self._dependent_modules = frozenset(module_references)
 
     @property
     def ranking_active_dependent_modules(self):
-        with self._lock:
-            active_dependent_modules = set()
-            for module_ref in self.dependent_modules:
-                module = module_ref()
-                if module is None:
-                    logger.warning(f'Dead dependent module weakref encountered in ManagedModule '
-                                   f'"{self._name}".')
-                    continue
-                if module.is_active:
-                    active_modules = module.ranking_active_dependent_modules
-                    if active_modules:
-                        active_dependent_modules.update(active_modules)
-                    else:
-                        active_dependent_modules.add(module_ref)
-            return active_dependent_modules
+        active_dependent_modules = set()
+        for module_ref in self.dependent_modules:
+            module = module_ref()
+            if module is None:
+                logger.warning(f'Dead dependent module weakref encountered in ManagedModule '
+                               f'"{self._name}".')
+                continue
+            if module.is_active:
+                active_modules = module.ranking_active_dependent_modules
+                if active_modules:
+                    active_dependent_modules.update(active_modules)
+                else:
+                    active_dependent_modules.add(module_ref)
+        return active_dependent_modules
 
     @property
     def module_thread_name(self):
