@@ -333,9 +333,9 @@ class ModuleWidget(QtWidgets.QTabWidget):
     def update_modules(self, modules_dict):
         for base, model in self.list_models.items():
             model.reset_modules(
-                {name: mod.state for name, mod in modules_dict.items() if mod.module_base == base},
+                {name: mod.state for name, mod in modules_dict.items() if mod.base == base},
                 {name: mod.has_app_data for name, mod in modules_dict.items() if
-                 mod.module_base == base}
+                 mod.base == base}
             )
         return
 

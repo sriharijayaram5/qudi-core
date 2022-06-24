@@ -273,7 +273,7 @@ class Base(QtCore.QObject, metaclass=ModuleMeta):
         return self.__logger
 
     @property
-    def is_module_threaded(self) -> bool:
+    def module_threaded(self) -> bool:
         """ Returns whether the module shall be started in its own thread.
         """
         return self._threaded
