@@ -370,7 +370,7 @@ class QudiMainGui(GuiBase):
         """ Clear and refill the module list widget
         """
         if modules is None:
-            modules = self._qudi_main.module_manager
+            modules = self._qudi_main.module_manager.modules
         self.mw.module_widget.update_modules(modules)
 
     @QtCore.Slot(str, str, str)

@@ -203,9 +203,9 @@ class QudiNamespaceService(rpyc.Service):
         """
         if self._force_remote_calls_by_value:
             mods = {name: ModuleRpycProxy(mod.instance) for name, mod in
-                    self._module_manager.items() if mod.is_active}
+                    self._module_manager.modules.items() if mod.is_active}
         else:
-            mods = {name: mod.instance for name, mod in self._module_manager.items() if
+            mods = {name: mod.instance for name, mod in self._module_manager.modules.items() if
                     mod.is_active}
         mods['qudi'] = self._qudi
         return mods

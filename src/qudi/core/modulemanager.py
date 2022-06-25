@@ -72,7 +72,6 @@ class ManagedModule(QtCore.QObject):
         self._base = base  # Remember qudi module base
         self._instance = None  # Holds the qudi module instance after loading the module
 
-
         # Sort out configuration dict
         # Extract module and class name
         self._module, self._class = configuration.get('module.Class', '.').rsplit('.', 1)
@@ -225,7 +224,7 @@ class ManagedModule(QtCore.QObject):
         except OSError:
             pass
         finally:
-            self.sigAppDataChanged.emit(self.base, self.name, self.has_app_data)
+            self.sigAppDataChanged.emit(self)
 
     @QtCore.Slot()
     def activate(self) -> None:
@@ -293,8 +292,8 @@ class ManagedModule(QtCore.QObject):
                 pass
 
         self.__last_state = self.state
-        self.sigStateChanged.emit(self.base, self.name, self.__last_state)
-        self.sigAppDataChanged.emit(self.base, self.name, self.has_app_data)
+        self.sigStateChanged.emit(self)
+        self.sigAppDataChanged.emit(self)
 
         # Raise exception if by some reason no exception propagated to here and the activation
         # is still unsuccessful.
@@ -321,7 +320,7 @@ class ManagedModule(QtCore.QObject):
         current_state = self.state
         if current_state != self.__last_state:
             self.__last_state = current_state
-            self.sigStateChanged.emit(self.base, self.name, current_state)
+            self.sigStateChanged.emit(self)
         try:
             self.__poll_timer.start()
         except AttributeError:
@@ -329,7 +328,7 @@ class ManagedModule(QtCore.QObject):
 
     @QtCore.Slot()
     def _state_change_callback(self, event=None):
-        self.sigStateChanged.emit(self.base, self.name, self.state)
+        self.sigStateChanged.emit(self)
 
     @QtCore.Slot()
     def deactivate(self) -> None:
@@ -395,8 +394,8 @@ class ManagedModule(QtCore.QObject):
         self._disconnect()
 
         self.__last_state = self.state
-        self.sigStateChanged.emit(self.base, self.name, self.__last_state)
-        self.sigAppDataChanged.emit(self.base, self.name, self.has_app_data)
+        self.sigStateChanged.emit(self)
+        self.sigAppDataChanged.emit(self)
 
         # Raise exception if by some reason no exception propagated to here and the deactivation
         # is still unsuccessful.
@@ -481,7 +480,7 @@ class ManagedModule(QtCore.QObject):
                     )
         finally:
             self.__last_state = self.state
-            self.sigStateChanged.emit(self.base, self.name, self.__last_state)
+            self.sigStateChanged.emit(self)
 
     def _connect(self):
         # Check if module has already been loaded/instantiated
@@ -531,6 +530,12 @@ class _ModuleManagerMappingInterface:
     def __contains__(self, key) -> bool:
         with self._lock:
             return key in self._modules
+
+    def clear(self) -> None:
+        with self._lock:
+            for mod_name in list(self._modules):
+                self._remove_module(mod_name, ignore_missing=True)
+            self.sigManagedModulesChanged.emit(self.modules)
 
 
 class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
@@ -587,68 +592,82 @@ class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
     def modules(self):
         return self._modules.copy()
 
-    def remove_module(self, module_name, ignore_missing=False, emit_change=True):
+    def remove_module(self, module_name: str, ignore_missing: Optional[bool] = False) -> None:
         with self._lock:
-            module = self._modules.pop(module_name, None)
-            if module is None and not ignore_missing:
-                raise KeyError(f'No module with name "{module_name}" registered.')
-            module.deactivate()
-            module.sigStateChanged.disconnect(self.sigModuleStateChanged)
-            module.sigAppDataChanged.disconnect(self.sigModuleAppDataChanged)
-            if module.allow_remote_access:
-                remote_modules_server = self._qudi_main_ref().remote_modules_server
-                if remote_modules_server is not None:
-                    remote_modules_server.remove_shared_module(module_name)
-            self.refresh_module_links()
-            if emit_change:
-                self.sigManagedModulesChanged.emit(self.modules)
+            self._remove_module(module_name, ignore_missing)
+            self.sigManagedModulesChanged.emit(self.modules)
 
-    def add_module(self, name, base, configuration, allow_overwrite=False, emit_change=True):
-        with self._lock:
-            if not isinstance(name, str) or not name:
-                raise TypeError('module name must be non-empty str type')
-            if base not in ('gui', 'logic', 'hardware'):
-                raise ValueError(f'No valid module base "{base}". '
-                                 f'Unable to create qudi module "{name}".')
-            if allow_overwrite:
-                self.remove_module(name, ignore_missing=True)
-            elif name in self._modules:
-                raise ValueError(f'Module with name "{name}" already registered.')
-            module = ManagedModule(self._qudi_main_ref, name, base, configuration)
-            module.sigStateChanged.connect(self.sigModuleStateChanged)
-            module.sigAppDataChanged.connect(self.sigModuleAppDataChanged)
-            self._modules[name] = module
-            self.refresh_module_links()
-            # Register module in remote module service if module should be shared
-            if module.allow_remote:
-                remote_modules_server = self._qudi_main_ref().remote_modules_server
-                if remote_modules_server is None:
-                    raise RuntimeError(
-                        f'Unable to share qudi module "{module.name}" as remote module. No remote '
-                        f'module server running in this qudi process.'
-                    )
-                else:
-                    logger.info(
-                        f'Start sharing qudi module "{module.name}" via remote module server.'
-                    )
-                    remote_modules_server.share_module(module)
-            if emit_change:
-                self.sigManagedModulesChanged.emit(self.modules)
+    def _remove_module(self, module_name: str, ignore_missing: Optional[bool] = False) -> None:
+        module = self._modules.pop(module_name, None)
+        if module is None and not ignore_missing:
+            raise KeyError(f'No module with name "{module_name}" registered.')
+        module.deactivate()
+        module.sigStateChanged.disconnect(self._module_state_change_callback)
+        module.sigAppDataChanged.disconnect(self._module_appdata_change_callback)
+        if module.allow_remote_access:
+            remote_modules_server = self._qudi_main_ref().remote_modules_server
+            if remote_modules_server is not None:
+                remote_modules_server.remove_shared_module(module_name)
+        self._refresh_module_links()
 
-    def refresh_module_links(self):
+    def add_module(self,
+                   name: str,
+                   base: str,
+                   configuration: Mapping[str, Any],
+                   allow_overwrite: Optional[bool] = False
+                   ) -> None:
         with self._lock:
-            weak_refs = {
-                name: weakref.ref(mod, partial(self._module_ref_dead_callback, module_name=name))
-                for name, mod in self._modules.items()
-            }
-            for module_name, module in self._modules.items():
-                # Add required module references
-                required = set(module.connections.values())
-                module.required_modules = set(
-                    mod_ref for name, mod_ref in weak_refs.items() if name in required)
-                # Add dependent module references
-                module.dependent_modules = set(mod_ref for mod_ref in weak_refs.values() if
-                                               module_name in mod_ref().connections.values())
+            self._add_module(name, base, configuration, allow_overwrite)
+            self.sigManagedModulesChanged.emit(self.modules)
+
+    def _add_module(self,
+                    name: str,
+                    base: str,
+                    configuration:
+                    Mapping[str, Any],
+                    allow_overwrite: Optional[bool] = False
+                    ) -> None:
+        if not isinstance(name, str) or not name:
+            raise TypeError('module name must be non-empty str type')
+        if base not in ('gui', 'logic', 'hardware'):
+            raise ValueError(f'No valid module base "{base}". '
+                             f'Unable to create qudi module "{name}".')
+        if allow_overwrite:
+            self._remove_module(name, ignore_missing=True)
+        elif name in self._modules:
+            raise ValueError(f'Module with name "{name}" already registered.')
+        module = ManagedModule(name, base, configuration, self._qudi_main_ref)
+        module.sigStateChanged.connect(self._module_state_change_callback)
+        module.sigAppDataChanged.connect(self._module_appdata_change_callback)
+        self._modules[name] = module
+        self._refresh_module_links()
+        # Register module in remote module service if module should be shared
+        if module.allow_remote:
+            remote_modules_server = self._qudi_main_ref().remote_modules_server
+            if remote_modules_server is None:
+                raise RuntimeError(
+                    f'Unable to share qudi module "{module.name}" as remote module. No remote '
+                    f'module server running in this qudi process.'
+                )
+            else:
+                logger.info(
+                    f'Start sharing qudi module "{module.name}" via remote module server.'
+                )
+                remote_modules_server.share_module(module)
+
+    def _refresh_module_links(self):
+        weak_refs = {
+            name: weakref.ref(mod, partial(self._module_ref_dead_callback, module_name=name))
+            for name, mod in self._modules.items()
+        }
+        for module_name, module in self._modules.items():
+            # Add required module references
+            required = set(module.connections.values())
+            module.required_modules = set(
+                mod_ref for name, mod_ref in weak_refs.items() if name in required)
+            # Add dependent module references
+            module.dependent_modules = set(mod_ref for mod_ref in weak_refs.values() if
+                                           module_name in mod_ref().connections.values())
 
     def activate_module(self, module_name):
         with self._lock:
@@ -679,11 +698,11 @@ class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
             return self._modules[module_name].clear_app_data()
 
     def has_app_data(self, module_name):
-        with self._lock:
-            if module_name not in self._modules:
-                raise KeyError(f'No module named "{module_name}" found in managed qudi modules. '
-                               f'Can not check for app status file.')
-            return self._modules[module_name].has_app_data()
+        module = self._modules.get(module_name, None)
+        if module is None:
+            raise KeyError(f'No module named "{module_name}" found in managed qudi modules. '
+                           f'Can not check for app status file.')
+        return module.has_app_data()
 
     def start_all_modules(self):
         with self._lock:
@@ -694,6 +713,14 @@ class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
         with self._lock:
             for module in self._modules.values():
                 module.deactivate()
+
+    @QtCore.Slot(object)
+    def _module_state_change_callback(self, module: ManagedModule) -> None:
+        self.sigModuleStateChanged.emit(module.base, module.name, module.state)
+
+    @QtCore.Slot(object)
+    def _module_appdata_change_callback(self, module: ManagedModule) -> None:
+        self.sigModuleAppDataChanged.emit(module.base, module.name, module.has_app_data)
 
     def _module_ref_dead_callback(self, dead_ref, module_name):
         self.remove_module(module_name, ignore_missing=True)
