@@ -25,6 +25,7 @@ import copy
 import weakref
 import fysom
 
+from abc import abstractmethod
 from typing import FrozenSet, Iterable, Optional, Any, Union, Mapping, Dict, List, Set
 from functools import partial
 from PySide2 import QtCore
@@ -32,10 +33,149 @@ from PySide2 import QtCore
 from qudi.util.mutex import Mutex   # provides access serialization between threads
 from qudi.core.logger import get_logger
 from qudi.core.servers import get_remote_module_instance
-from qudi.core.module import Base
+from qudi.core.module import Base, ModuleStateMachine
 from qudi.util.paths import get_module_app_data_path
 
 logger = get_logger(__name__)
+
+
+class ManagedModule:
+    """
+    """
+    def __init__(self,
+                 name: str,
+                 base: str,
+                 config: Mapping[str, Any],
+                 qudi_main: object,
+                 module_manager: object
+                 ) -> None:
+        super().__init__()
+        if not name or not isinstance(name, str):
+            raise ValueError('Module name must be a non-empty string.')
+        if base not in ['gui', 'logic', 'hardware']:
+            raise ValueError('Module base must be one of ["gui", "logic", "hardware"].')
+        if QtCore.QThread.currentThread() is not QtCore.QCoreApplication.instance().thread():
+            raise RuntimeError('ManagedModules can only be owned by the application main thread.')
+
+        self._mutex = Mutex()
+        self._fsm = ModuleStateMachine()
+
+        self._name = name            # Each qudi module needs a unique string identifier
+        self._base = base            # Remember qudi module base
+        self._config = config        # Save reference to config
+        self._qudi_main_ref = weakref.ref(qudi_main)
+        self._module_manager_ref = weakref.ref(module_manager)
+        self._instance = None        # Holds the qudi module instance after loading the module
+
+        self._required_modules = set()
+        self._dependent_modules = set()
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def base(self) -> str:
+        return self._base
+
+    @property
+    def instance(self) -> Base:
+        return self._instance
+
+    @property
+    def required_module_names(self) -> Set[str]:
+        return {mod.name for mod in self._required_modules}
+
+    @property
+    def dependent_module_names(self) -> Set[str]:
+        return {mod.name for mod in self._dependent_modules}
+
+    @property
+    def state(self) -> str:
+        return self._fsm.current
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.state != 'not loaded'
+
+    @property
+    def is_active(self) -> bool:
+        return self.state not in ['not loaded', 'deactivated']
+
+    @property
+    def is_busy(self) -> bool:
+        return self.state == 'busy'
+
+    def register_dependent_module(self, module: object) -> None:
+        with self._mutex:
+            if self.is_active:
+                self._dependent_modules.add(module)
+            else:
+                raise RuntimeError(f'Tried to register dependent module "{module.name}" on '
+                                   f'non-active module "{self.name}"')
+
+    def load(self) -> None:
+        with self._mutex:
+            self._fsm.load()
+
+    def reload(self) -> None:
+        with self._mutex:
+            self._fsm.reload()
+
+    def activate(self) -> None:
+        with self._mutex:
+            self._fsm.activate()
+
+    def deactivate(self) -> None:
+        with self._mutex:
+            self._fsm.deactivate()
+
+    def lock(self) -> None:
+        if self._mutex.try_lock():
+            try:
+                self._fsm.lock()
+            finally:
+                self._mutex.unlock()
+
+    def unlock(self) -> None:
+        if self._mutex.try_lock():
+            try:
+                self._fsm.unlock()
+            finally:
+                self._mutex.unlock()
+
+    @abstractmethod
+    def _load(self) -> None:
+        pass
+
+    @abstractmethod
+    def _reload(self) -> None:
+        pass
+
+    @abstractmethod
+    def _activate(self) -> None:
+        pass
+
+    @abstractmethod
+    def _deactivate(self) -> None:
+        pass
+
+    @abstractmethod
+    def _lock(self) -> None:
+        pass
+
+    @abstractmethod
+    def _unlock(self) -> None:
+        pass
+
+    # @property
+    # def is_remote(self) -> bool:
+    #     return bool(self._remote_url)
+
+    @property
+    @abstractmethod
+    def status_file_path(self) -> str:
+        pass
 
 
 class ManagedModule(QtCore.QObject):
