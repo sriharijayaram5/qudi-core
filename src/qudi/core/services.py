@@ -93,27 +93,108 @@ class RemoteModulesService(rpyc.Service):
         host, port = conn._config['endpoints'][1]
         logger.info(f'Client [{host}]:{port:d} disconnected from remote modules service')
 
-    def exposed_get_module_instance(self, name, activate=False):
-        """ Return reference to a module in the shared module list.
-
-        @param str name: unique module name
-
-        @return object: reference to the module
+    def exposed_get_module_state(self, name: str) -> str:
+        """ Return state string for a shared module.
         """
         with self._thread_lock:
             try:
                 module = self.shared_modules.get(name, None)()
             except TypeError:
                 logger.error(f'Client requested a module ("{name}") that is not shared.')
-                return None
-            if activate:
-                if not module.activate():
-                    logger.error(f'Unable to share requested module "{name}" with client. Module '
-                                 f'can not be activated.')
-                    return None
-            if self._force_remote_calls_by_value:
-                return ModuleRpycProxy(module.instance)
-            return module.instance
+                return ''
+            return module.state
+
+    def exposed_activate_module(self, name: str) -> bool:
+        """ Try to activate a module and return a success flag.
+        """
+        with self._thread_lock:
+            try:
+                module = self.shared_modules.get(name, None)()
+            except TypeError:
+                logger.error(f'Client requested a module ("{name}") that is not shared.')
+                return False
+            try:
+                module.activate()
+            except:
+                logger.exception(f'Unable to activate shared module "{name}" from client')
+                return False
+            return True
+
+    def exposed_deactivate_module(self, name: str) -> bool:
+        """ Try to deactivate a module and return a success flag.
+        """
+        with self._thread_lock:
+            try:
+                module = self.shared_modules.get(name, None)()
+            except TypeError:
+                logger.error(f'Client requested a module ("{name}") that is not shared.')
+                return False
+            try:
+                module.deactivate()
+            except:
+                logger.exception(f'Unable to deactivate shared module "{name}" from client')
+                return False
+            return True
+
+    def exposed_reload_module(self, name: str) -> bool:
+        """ Try to reload a module and return a success flag.
+        """
+        with self._thread_lock:
+            try:
+                module = self.shared_modules.get(name, None)()
+            except TypeError:
+                logger.error(f'Client requested a module ("{name}") that is not shared.')
+                return False
+            try:
+                module.reload()
+            except:
+                logger.exception(f'Unable to reload shared module "{name}" from client')
+                return False
+            return True
+
+    def exposed_toggle_module_lock(self, name: str, lock: bool) -> bool:
+        """ Try to lock/unlock a module and return a success flag.
+        """
+        with self._thread_lock:
+            try:
+                module = self.shared_modules.get(name, None)()
+            except TypeError:
+                logger.error(f'Client requested a module ("{name}") that is not shared.')
+                return False
+            try:
+                if lock:
+                    module.lock()
+                else:
+                    module.unlock()
+            except:
+                tmp = 'lock' if lock else 'unlock'
+                logger.exception(f'Unable to {tmp} shared module "{name}" from client')
+                return False
+            return True
+
+    def exposed_module_has_app_data(self, name: str) -> bool:
+        """ """
+        with self._thread_lock:
+            try:
+                module = self.shared_modules.get(name, None)()
+            except TypeError:
+                logger.error(f'Client requested a module ("{name}") that is not shared.')
+                return False
+            return module.has_app_data
+
+    def exposed_clear_module_app_data(self, name: str) -> bool:
+        with self._thread_lock:
+            try:
+                module = self.shared_modules.get(name, None)()
+            except TypeError:
+                logger.error(f'Client requested a module ("{name}") that is not shared.')
+                return False
+            try:
+                module.clear_app_data()
+            except:
+                logger.exception(f'Unable to clear AppData for shared module "{name}" from client')
+                return False
+            return True
 
     def exposed_get_available_module_names(self):
         """ Returns the currently shared module names independent of the current module state.
