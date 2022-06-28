@@ -33,10 +33,7 @@ from PySide2 import QtCore
 from qudi.util.mutex import Mutex   # provides access serialization between threads
 from qudi.core.logger import get_logger
 from qudi.core.threadmanager import ThreadManager
-from qudi.core.servers import get_remote_module_instance, get_remote_module_state
-from qudi.core.servers import activate_remote_module, deactivate_remote_module, reload_remote_module
-from qudi.core.servers import remote_module_has_app_data, clear_remote_module_app_data
-from qudi.core.servers import toggle_remote_module_lock
+from qudi.core.services import connect_remote_module
 from qudi.core.module import Base, ModuleStateMachine
 from qudi.core.meta import ABCQObjectMeta
 from qudi.util.paths import get_module_app_data_path
@@ -162,20 +159,6 @@ class ManagedModule(QtCore.QObject, metaclass=ABCQObjectMeta):
 
     @abstractmethod
     def deactivate(self) -> None:
-        pass
-
-    @abstractmethod
-    def lock(self) -> None:
-        pass
-        # if self._mutex.try_lock():
-        #     try:
-        #         self._lock()
-        #     finally:
-        #         self._mutex.unlock()
-        #         self.sigStateChanged.emit(self, self.state)
-
-    @abstractmethod
-    def unlock(self) -> None:
         pass
 
     @abstractmethod
@@ -434,16 +417,6 @@ class LocalManagedModule(ManagedModule):
             self.sigStateChanged.emit(self, self.state)
             self.sigAppDataChanged.emit(self, self.has_app_data)
 
-    def lock(self) -> None:
-        if self._instance is None:
-            raise RuntimeError(f'Unable to lock module "{self.name}". Module is not loaded yet.')
-        self._instance.module_state.lock()
-
-    def unlock(self) -> None:
-        if self._instance is None:
-            raise RuntimeError(f'Unable to unlock module "{self.name}". Module is not loaded yet.')
-        self._instance.module_state.unlock()
-
     def clear_app_data(self) -> None:
         try:
             os.remove(self._status_file_path)
@@ -471,37 +444,45 @@ class RemoteManagedModule(ManagedModule):
                          parent=parent)
         # Extract rpyc URL
         self._url = self._config['remote_url']
-        # Remember connections by name
+        # Get SSL certificate and key if present
         self._certfile = self._config['certfile']
-        # See if remote access to this module is allowed
         self._keyfile = self._config['keyfile']
+        if (not self._certfile) or (not self._keyfile):
+            self._certfile = None
+            self._keyfile = None
+
         # Remember last state to detect state changes
         self._last_state = 'not loaded'
-
-        if not self._certfile:
-            self._certfile = None
-        if not self._keyfile:
-            self._keyfile = None
-        if self._certfile is None or self._keyfile is None:
-            self._certfile = None
-            self._keyfile = None
+        # remote module manager instance
+        self._remote_manager = None
+        # remote module instance
+        self._remote_instance = None
+        # configured name of the module on remote
+        self._remote_name = ''
 
     @property
     def instance(self) -> Union[None, Base]:
-        return get_remote_module_instance(self._url, certfile=self._certfile, keyfile=self._keyfile)
+        return self._remote_instance
 
     @property
     def has_app_data(self) -> bool:
-        return remote_module_has_app_data(self._url, certfile=self._certfile, keyfile=self._keyfile)
+        try:
+            return self._remote_manager.module_has_app_data(self._remote_name)
+        except (AttributeError, ValueError):
+            pass
+        return False
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._remote_instance is not None
 
     @property
     def state(self) -> str:
-        state = get_remote_module_state(self._url, certfile=self._certfile, keyfile=self._keyfile)
-        if not state:
-            raise RuntimeError(
-                f'Unable to retrieve module state from remote module "{self.name}" ({self._url})'
-            )
-        return state
+        try:
+            return self._remote_manager.get_module_state(self._remote_name)
+        except AttributeError:
+            pass
+        return 'not loaded'
 
     def load(self) -> None:
         # Do nothing if already loaded
@@ -509,13 +490,17 @@ class RemoteManagedModule(ManagedModule):
             return
 
         try:
-            instance = get_remote_module_instance(self._url,
-                                                  certfile=self._certfile,
-                                                  keyfile=self._keyfile)
-            if instance is None:
-                raise RuntimeError(f'Unable to load remote module "{self.name}" ({self._url})')
+            if self._remote_manager is None:
+                service = self._connect_remote_module()
+            else:
+                service, _ = connect_remote_module(self._url,
+                                                   certfile=self._certfile,
+                                                   keyfile=self._keyfile)
+            self._remote_manager.load_module(self._remote_name)
+            self._remote_instance = service.root.get_module_instance(self._remote_name)
         finally:
             self.sigStateChanged.emit(self, self.state)
+            self.sigAppDataChanged.emit(self, self.has_app_data)
 
     def reload(self) -> None:
         # Do a normal load if it was not already loaded
@@ -531,8 +516,12 @@ class RemoteManagedModule(ManagedModule):
                 modules_to_activate = set()
 
             # reload module
-            if not reload_remote_module(self._url, certfile=self._certfile, keyfile=self._keyfile):
-                raise RuntimeError(f'Unable to reload remote module "{self.name}" ({self._url})')
+            try:
+                self._remote_manager.reload_module(self._remote_name)
+            except Exception as err:
+                raise RuntimeError(
+                    f'Unable to reload remote module "{self.name}" ({self._url})'
+                ) from err
 
             # re-activate all modules that have been active before
             if was_active:
@@ -540,6 +529,7 @@ class RemoteManagedModule(ManagedModule):
                     module.activate()
         finally:
             self.sigStateChanged.emit(self, self.state)
+            self.sigAppDataChanged.emit(self, self.has_app_data)
 
     def activate(self) -> None:
         # Return early if already active
@@ -553,11 +543,14 @@ class RemoteManagedModule(ManagedModule):
             logger.info(f'Activating remote {self.base} module "{self.name}" at {self._url}')
 
             # Activate this module
-            if not activate_remote_module(self._url, certfile=self._certfile, keyfile=self._keyfile):
-                raise RuntimeError(f'Unable to activate remote module "{self.name}" ({self._url})')
+            try:
+                self._remote_manager.activate_module(self._remote_name)
+            except Exception as err:
+                raise RuntimeError(
+                    f'Unable to activate remote module "{self.name}" ({self._url})'
+                ) from err
         finally:
             self.sigStateChanged.emit(self, self.state)
-            self.sigAppDataChanged.emit(self, self.has_app_data)
 
     def deactivate(self) -> None:
         # Return early if nothing to do
@@ -572,44 +565,34 @@ class RemoteManagedModule(ManagedModule):
             logger.info(f'Deactivating remote {self.base} module "{self.name}" at {self._url}')
 
             # Actual deactivation of this module
-            if not deactivate_remote_module(self._url, certfile=self._certfile, keyfile=self._keyfile):
+            try:
+                self._remote_manager.deactivate_module(self._remote_name)
+            except Exception as err:
                 raise RuntimeError(
                     f'Unable to deactivate remote module "{self.name}" ({self._url})'
-                )
+                ) from err
         finally:
             self.sigStateChanged.emit(self, self.state)
             self.sigAppDataChanged.emit(self, self.has_app_data)
-
-    def lock(self) -> None:
-        try:
-            if not toggle_remote_module_lock(self._url,
-                                             True,
-                                             certfile=self._certfile,
-                                             keyfile=self._keyfile):
-                raise RuntimeError(f'Unable to lock remote module "{self.name}" ({self._url})')
-        finally:
-            self.sigStateChanged.emit(self, self.state)
-
-    def unlock(self) -> None:
-        try:
-            if not toggle_remote_module_lock(self._url,
-                                             False,
-                                             certfile=self._certfile,
-                                             keyfile=self._keyfile):
-                raise RuntimeError(f'Unable to unlock remote module "{self.name}" ({self._url})')
-        finally:
-            self.sigStateChanged.emit(self, self.state)
 
     def clear_app_data(self) -> None:
         try:
-            if not clear_remote_module_app_data(self._url,
-                                                certfile=self._certfile,
-                                                keyfile=self._keyfile):
-                raise RuntimeError(
-                    f'Unable to clear AppData of remote module "{self.name}" ({self._url})'
-                )
+            if self._remote_manager is None:
+                self._connect_remote_module()
+            self._remote_manager.clear_module_app_data(self._remote_name)
+        except Exception as err:
+            raise RuntimeError(
+                f'Unable to clear AppData of remote module "{self.name}" ({self._url})'
+            ) from err
         finally:
             self.sigAppDataChanged.emit(self, self.has_app_data)
+
+    def _connect_remote_module(self) -> object:
+        service, self._remote_name = connect_remote_module(self._url,
+                                                           certfile=self._certfile,
+                                                           keyfile=self._keyfile)
+        self._remote_manager = service.root.get_module_manager()
+        return service
 
 
 class _ModuleManagerMappingInterface:
@@ -655,7 +638,7 @@ class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
 
     sigModuleStateChanged = QtCore.Signal(str, str, str)
     sigModuleAppDataChanged = QtCore.Signal(str, str, bool)
-    sigManagedModulesChanged = QtCore.Signal(dict)
+    sigManagedModulesChanged = QtCore.Signal()
 
     def __new__(cls, *args, **kwargs):
         with cls._lock:
@@ -668,9 +651,8 @@ class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
                 'process. Please use ModuleManager.instance() instead.'
             )
 
-    def __init__(self, *args, qudi_main, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._qudi_main_ref = weakref.ref(qudi_main, self._qudi_main_ref_dead_callback)
+    def __init__(self, qudi_main, parent: Optional[QtCore.QObject] = None):
+        super().__init__(parent=parent)
         self._modules = dict()
 
     @classmethod
@@ -697,14 +679,10 @@ class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
             return {name: mod.instance for name, mod in self._modules.items() if
                     mod.instance is not None}
 
-    @property
-    def modules(self):
-        return self._modules.copy()
-
     def remove_module(self, module_name: str, ignore_missing: Optional[bool] = False) -> None:
         with self._lock:
             self._remove_module(module_name, ignore_missing)
-            self.sigManagedModulesChanged.emit(self.modules)
+            self.sigManagedModulesChanged.emit()
 
     def _remove_module(self, module_name: str, ignore_missing: Optional[bool] = False) -> None:
         module = self._modules.pop(module_name, None)
@@ -833,8 +811,3 @@ class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
 
     def _module_ref_dead_callback(self, dead_ref, module_name):
         self.remove_module(module_name, ignore_missing=True)
-
-    def _qudi_main_ref_dead_callback(self):
-        logger.error('Qudi main reference no longer valid. This should never happen. Tearing down '
-                     'ModuleManager.')
-        self.clear()

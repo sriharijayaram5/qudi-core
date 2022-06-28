@@ -27,9 +27,7 @@ __all__ = ['get_remote_module_instance', 'get_remote_module_state', 'toggle_remo
 import ssl
 import rpyc
 import weakref
-from typing import Optional, Tuple
 from PySide2 import QtCore
-from urllib.parse import urlparse
 from rpyc.utils.authenticators import SSLAuthenticator
 
 from qudi.util.mutex import Mutex
@@ -37,108 +35,6 @@ from qudi.core.logger import get_logger
 from qudi.core.services import RemoteModulesService, QudiNamespaceService
 
 logger = get_logger(__name__)
-
-
-def _connect_remote_module(remote_url: str,
-                           certfile: Optional[str] = None,
-                           keyfile: Optional[str] = None,
-                           protocol_config: Optional[dict] = None) -> Tuple[object, str]:
-    parsed = urlparse(remote_url)
-    if protocol_config is None:
-        protocol_config = {'allow_all_attrs'     : True,
-                           'allow_setattr'       : True,
-                           'allow_delattr'       : True,
-                           'allow_pickle'        : True,
-                           'sync_request_timeout': 3600}
-    connection = rpyc.ssl_connect(host=parsed.hostname,
-                                  port=parsed.port,
-                                  config=protocol_config,
-                                  certfile=certfile,
-                                  keyfile=keyfile)
-    return connection, parsed.path.replace('/', '')
-
-
-def get_remote_module_instance(remote_url: str,
-                               certfile: Optional[str] = None,
-                               keyfile: Optional[str] = None,
-                               protocol_config: Optional[dict] = None):
-    """ Helper method to retrieve a remote module instance via rpyc from a qudi RemoteModuleServer.
-
-    @param str remote_url: The URL of the remote qudi module
-    @param str certfile: Certificate file path for the request
-    @param str keyfile: Key file path for the request
-    @param dict protocol_config: optional, configuration options for rpyc.ssl_connect
-
-    @return object: The requested qudi module instance (None if request failed)
-    """
-    connection, module_name = _connect_remote_module(remote_url,
-                                                     certfile=certfile,
-                                                     keyfile=keyfile,
-                                                     protocol_config=protocol_config)
-    return connection.root.get_module_instance(module_name)
-
-
-def get_remote_module_state(remote_url, certfile=None, keyfile=None, protocol_config=None) -> str:
-    """ """
-    connection, module_name = _connect_remote_module(remote_url,
-                                                     certfile=certfile,
-                                                     keyfile=keyfile,
-                                                     protocol_config=protocol_config)
-    return connection.root.get_module_state(module_name)
-
-
-def activate_remote_module(remote_url, certfile=None, keyfile=None, protocol_config=None) -> bool:
-    """ """
-    connection, module_name = _connect_remote_module(remote_url,
-                                                     certfile=certfile,
-                                                     keyfile=keyfile,
-                                                     protocol_config=protocol_config)
-    return connection.root.activate_module(module_name)
-
-
-def deactivate_remote_module(remote_url, certfile=None, keyfile=None, protocol_config=None) -> bool:
-    """ """
-    connection, module_name = _connect_remote_module(remote_url,
-                                                     certfile=certfile,
-                                                     keyfile=keyfile,
-                                                     protocol_config=protocol_config)
-    return connection.root.deactivate_module(module_name)
-
-
-def reload_remote_module(remote_url, certfile=None, keyfile=None, protocol_config=None) -> bool:
-    """ """
-    connection, module_name = _connect_remote_module(remote_url,
-                                                     certfile=certfile,
-                                                     keyfile=keyfile,
-                                                     protocol_config=protocol_config)
-    return connection.root.reload_module(module_name)
-
-
-def toggle_remote_module_lock(remote_url, lock, certfile=None, keyfile=None, protocol_config=None) -> bool:
-    """ """
-    connection, module_name = _connect_remote_module(remote_url,
-                                                     certfile=certfile,
-                                                     keyfile=keyfile,
-                                                     protocol_config=protocol_config)
-    return connection.root.toggle_module_lock(module_name, bool(lock))
-
-
-def clear_remote_module_app_data(remote_url, certfile=None, keyfile=None, protocol_config=None) -> bool:
-    """ """
-    connection, module_name = _connect_remote_module(remote_url,
-                                                     certfile=certfile,
-                                                     keyfile=keyfile,
-                                                     protocol_config=protocol_config)
-    return connection.root.clear_module_app_data(module_name)
-
-
-def remote_module_has_app_data(remote_url, certfile=None, keyfile=None, protocol_config=None) -> bool:
-    """ """
-    connection, module_name = _connect_remote_module(remote_url,
-                                                     certfile=certfile,
-                                                     keyfile=keyfile,
-                                                     protocol_config=protocol_config)
-    return connection.root.module_has_app_data(module_name)
 
 
 class _ServerRunnable(QtCore.QObject):

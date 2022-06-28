@@ -19,42 +19,41 @@ You should have received a copy of the GNU Lesser General Public License along w
 If not, see <https://www.gnu.org/licenses/>.
 """
 
-__all__ = ('RemoteModulesService', 'QudiNamespaceService')
+__all__ = ['RemoteModulesService', 'QudiNamespaceService', 'connect_remote_module']
 
 import rpyc
 import weakref
 from functools import wraps
+from urllib.parse import urlparse
 from inspect import signature, isfunction, ismethod
+from typing import Optional, Tuple
 
 from qudi.util.mutex import Mutex
-from qudi.util.models import DictTableModel
+from qudi.util.models import ListTableModel
 from qudi.util.network import netobtain
 from qudi.core.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-class _SharedModulesModel(DictTableModel):
-    """ Derived dict model for GUI display elements
-    """
-    def __init__(self):
-        super().__init__(headers='Shared Module')
-
-    def data(self, index, role):
-        """ Get data from model for a given cell. Data can have a role that affects display.
-
-        @param QModelIndex index: cell for which data is requested
-        @param ItemDataRole role: role for which data is requested
-
-        @return QVariant: data for given cell and role
-        """
-        data = super().data(index, role)
-        if data is None:
-            return None
-        # second column returns weakref.ref object
-        if index.column() == 1:
-            data = data()
-        return data
+def connect_remote_module(remote_url: str,
+                          certfile: Optional[str] = None,
+                          keyfile: Optional[str] = None,
+                          protocol_config: Optional[dict] = None
+                          ) -> Tuple[rpyc.Connection, str]:
+    if protocol_config is None:
+        protocol_config = {'allow_all_attrs'     : True,
+                           'allow_setattr'       : True,
+                           'allow_delattr'       : True,
+                           'allow_pickle'        : True,
+                           'sync_request_timeout': 3600}
+    parsed = urlparse(remote_url)
+    connection = rpyc.ssl_connect(host=parsed.hostname,
+                                  port=parsed.port,
+                                  config=protocol_config,
+                                  certfile=certfile,
+                                  keyfile=keyfile)
+    return connection, parsed.path.replace('/', '')
 
 
 class RemoteModulesService(rpyc.Service):
@@ -65,21 +64,19 @@ class RemoteModulesService(rpyc.Service):
     def __init__(self, *args, force_remote_calls_by_value=False, **kwargs):
         super().__init__(*args, **kwargs)
         self._thread_lock = Mutex()
-        self.shared_modules = _SharedModulesModel()
         self._force_remote_calls_by_value = force_remote_calls_by_value
+        self.shared_modules = ListTableModel(headers='Shared Module')
 
-    def share_module(self, module):
+    def share_module(self, module_name: str):
         with self._thread_lock:
-            if module.name in self.shared_modules:
-                logger.warning(f'Module "{module.name}" already shared')
-                return
-            self.shared_modules[module.name] = weakref.ref(module)
-            weakref.finalize(module, self.remove_shared_module, module.name)
+            if module_name in self.shared_modules:
+                logger.warning(f'Module with name "{module_name}" already shared')
+            else:
+                self.shared_modules.append(module_name)
 
-    def remove_shared_module(self, module):
+    def remove_shared_module(self, module_name: str):
         with self._thread_lock:
-            name = module if isinstance(module, str) else module.name
-            self.shared_modules.pop(name, None)
+            self.shared_modules.remove(module_name)
 
     def on_connect(self, conn):
         """ code that runs when a connection is created
@@ -93,108 +90,29 @@ class RemoteModulesService(rpyc.Service):
         host, port = conn._config['endpoints'][1]
         logger.info(f'Client [{host}]:{port:d} disconnected from remote modules service')
 
-    def exposed_get_module_state(self, name: str) -> str:
-        """ Return state string for a shared module.
+    def exposed_get_module_manager(self) -> object:
+        """ Return the ModuleManager singleton to the remote client.
         """
-        with self._thread_lock:
-            try:
-                module = self.shared_modules.get(name, None)()
-            except TypeError:
-                logger.error(f'Client requested a module ("{name}") that is not shared.')
-                return ''
-            return module.state
+        from qudi.core.modulemanager import ModuleManager
+        return ModuleManager.instance()
 
-    def exposed_activate_module(self, name: str) -> bool:
+    def exposed_get_module_instance(self, module_name: str) -> object:
         """ Try to activate a module and return a success flag.
         """
-        with self._thread_lock:
-            try:
-                module = self.shared_modules.get(name, None)()
-            except TypeError:
-                logger.error(f'Client requested a module ("{name}") that is not shared.')
-                return False
-            try:
-                module.activate()
-            except:
-                logger.exception(f'Unable to activate shared module "{name}" from client')
-                return False
-            return True
-
-    def exposed_deactivate_module(self, name: str) -> bool:
-        """ Try to deactivate a module and return a success flag.
-        """
-        with self._thread_lock:
-            try:
-                module = self.shared_modules.get(name, None)()
-            except TypeError:
-                logger.error(f'Client requested a module ("{name}") that is not shared.')
-                return False
-            try:
-                module.deactivate()
-            except:
-                logger.exception(f'Unable to deactivate shared module "{name}" from client')
-                return False
-            return True
-
-    def exposed_reload_module(self, name: str) -> bool:
-        """ Try to reload a module and return a success flag.
-        """
-        with self._thread_lock:
-            try:
-                module = self.shared_modules.get(name, None)()
-            except TypeError:
-                logger.error(f'Client requested a module ("{name}") that is not shared.')
-                return False
-            try:
-                module.reload()
-            except:
-                logger.exception(f'Unable to reload shared module "{name}" from client')
-                return False
-            return True
-
-    def exposed_toggle_module_lock(self, name: str, lock: bool) -> bool:
-        """ Try to lock/unlock a module and return a success flag.
-        """
-        with self._thread_lock:
-            try:
-                module = self.shared_modules.get(name, None)()
-            except TypeError:
-                logger.error(f'Client requested a module ("{name}") that is not shared.')
-                return False
-            try:
-                if lock:
-                    module.lock()
-                else:
-                    module.unlock()
-            except:
-                tmp = 'lock' if lock else 'unlock'
-                logger.exception(f'Unable to {tmp} shared module "{name}" from client')
-                return False
-            return True
-
-    def exposed_module_has_app_data(self, name: str) -> bool:
-        """ """
-        with self._thread_lock:
-            try:
-                module = self.shared_modules.get(name, None)()
-            except TypeError:
-                logger.error(f'Client requested a module ("{name}") that is not shared.')
-                return False
-            return module.has_app_data
-
-    def exposed_clear_module_app_data(self, name: str) -> bool:
-        with self._thread_lock:
-            try:
-                module = self.shared_modules.get(name, None)()
-            except TypeError:
-                logger.error(f'Client requested a module ("{name}") that is not shared.')
-                return False
-            try:
-                module.clear_app_data()
-            except:
-                logger.exception(f'Unable to clear AppData for shared module "{name}" from client')
-                return False
-            return True
+        if module_name not in self.shared_modules:
+            logger.error(f'Client requested a module ("{module_name}") that is not shared.')
+            return None
+        try:
+            instance = self.exposed_get_module_manager().get_module_instance(module_name)
+            if self._force_remote_calls_by_value and instance is not None:
+                return ModuleRpycProxy(instance)
+            else:
+                return instance
+        except:
+            logger.exception(
+                f'Exception while retrieving module instance "{module_name}" for client.'
+            )
+        return None
 
     def exposed_get_available_module_names(self):
         """ Returns the currently shared module names independent of the current module state.
@@ -203,28 +121,6 @@ class RemoteModulesService(rpyc.Service):
         """
         with self._thread_lock:
             return tuple(self.shared_modules)
-
-    def exposed_get_loaded_module_names(self):
-        """ Returns the currently shared module names for all modules that have been loaded
-        (instantiated).
-
-        @return tuple: Names of the currently shared and loaded modules
-        """
-        with self._thread_lock:
-            all_modules = {name: ref() for name, ref in self.shared_modules.items()}
-            return tuple(name for name, mod in all_modules.items() if
-                         mod is not None and mod.instance is not None)
-
-    def exposed_get_active_module_names(self):
-        """ Returns the currently shared module names for all modules that are active.
-
-        @return tuple: Names of the currently shared active modules
-        """
-        with self._thread_lock:
-            all_modules = {name: ref() for name, ref in self.shared_modules.items()}
-            return tuple(
-                name for name, mod in all_modules.items() if mod is not None and mod.is_active
-            )
 
 
 class QudiNamespaceService(rpyc.Service):
