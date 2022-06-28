@@ -36,35 +36,65 @@ from qudi.core.meta import ModuleMeta
 from qudi.core.logger import get_logger
 
 
-class ModuleStateMachine(Fysom):
-    """ ToDo: Document """
+class ModuleStateMachine(Fysom, QtCore.QObject):
+    """
+    FIXME
+    """
+    # do not copy declaration of trigger(self, event, *args, **kwargs), just apply Slot decorator
+    trigger = QtCore.Slot(str, result=bool)(Fysom.trigger)
 
-    def __init__(self, callbacks=None):
+    # signals
+    sigStateChanged = QtCore.Signal(object)  # Fysom event
+
+    def __init__(self, callbacks=None, parent=None, **kwargs):
         if callbacks is None:
             callbacks = dict()
 
         # State machine definition
-        #   name: event name,
-        #    src: source state,
-        #    dst: destination state
-        fsm_cfg = {'initial': 'not loaded',
-                   'events': [{'name': 'load', 'src': 'not loaded', 'dst': 'deactivated'},
-                              {'name': 'reload', 'src': 'deactivated', 'dst': 'deactivated'},
-                              {'name': 'reload', 'src': 'idle', 'dst': 'idle'},
-                              {'name': 'reload', 'src': 'busy', 'dst': 'idle'},
-                              {'name': 'activate', 'src': 'deactivated', 'dst': 'idle'},
+        # the abbreviations for the event list are the following:
+        #   name:   event name,
+        #   src:    source state,
+        #   dst:    destination state
+        fsm_cfg = {'initial': 'deactivated',
+                   'events': [{'name': 'activate', 'src': 'deactivated', 'dst': 'idle'},
                               {'name': 'deactivate', 'src': 'idle', 'dst': 'deactivated'},
-                              {'name': 'deactivate', 'src': 'busy', 'dst': 'deactivated'},
-                              {'name': 'lock', 'src': 'idle', 'dst': 'busy'},
-                              {'name': 'unlock', 'src': 'busy', 'dst': 'idle'}],
+                              {'name': 'deactivate', 'src': 'locked', 'dst': 'deactivated'},
+                              {'name': 'lock', 'src': 'idle', 'dst': 'locked'},
+                              {'name': 'unlock', 'src': 'locked', 'dst': 'idle'}],
                    'callbacks': callbacks}
 
-        # Initialise state machine
-        super().__init__(cfg=fsm_cfg)
+        # Initialise state machine:
+        super().__init__(parent=parent, cfg=fsm_cfg, **kwargs)
 
     def __call__(self) -> str:
-        """ Returns the current state """
+        """
+        Returns the current state.
+        """
         return self.current
+
+    def on_change_state(self, e: Any) -> None:
+        """
+        Fysom callback for all state transitions.
+
+        @param object e: Fysom event object passed through all state transition callbacks
+        """
+        self.sigStateChanged.emit(e)
+
+    @QtCore.Slot()
+    def activate(self) -> None:
+        super().activate()
+
+    @QtCore.Slot()
+    def deactivate(self) -> None:
+        super().deactivate()
+
+    @QtCore.Slot()
+    def lock(self) -> None:
+        super().lock()
+
+    @QtCore.Slot()
+    def unlock(self) -> None:
+        super().unlock()
 
 
 class Base(QtCore.QObject, metaclass=ModuleMeta):

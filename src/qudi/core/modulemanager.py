@@ -32,40 +32,66 @@ from PySide2 import QtCore
 
 from qudi.util.mutex import Mutex   # provides access serialization between threads
 from qudi.core.logger import get_logger
+from qudi.core.threadmanager import ThreadManager
 from qudi.core.servers import get_remote_module_instance
 from qudi.core.module import Base, ModuleStateMachine
+from qudi.core.meta import ABCQObjectMeta
 from qudi.util.paths import get_module_app_data_path
 
 logger = get_logger(__name__)
 
 
-class ManagedModule:
+class ManagedModule(QtCore.QObject, metaclass=ABCQObjectMeta):
+    """ Object representing a qudi module (gui, logic or hardware) to be managed by the qudi Manager
+     object. Contains status properties and handles initialization, state transitions and
+     connection of the module.
     """
-    """
-    def __init__(self,
-                 name: str,
-                 base: str,
-                 config: Mapping[str, Any],
-                 qudi_main: object,
-                 module_manager: object
-                 ) -> None:
-        super().__init__()
+    sigStateChanged = QtCore.Signal(object, str)  # self, state
+    sigAppDataChanged = QtCore.Signal(object, bool)  # self, has_appdata
+
+    _managed_modules = weakref.WeakValueDictionary()
+
+    def __new__(cls,
+                name: str,
+                base: str,
+                config: Mapping[str, Any],
+                qudi_main: object,
+                module_manager: object,
+                parent: Optional[QtCore.QObject] = None
+                ) -> object:
         if not name or not isinstance(name, str):
             raise ValueError('Module name must be a non-empty string.')
         if base not in ['gui', 'logic', 'hardware']:
             raise ValueError('Module base must be one of ["gui", "logic", "hardware"].')
         if QtCore.QThread.currentThread() is not QtCore.QCoreApplication.instance().thread():
             raise RuntimeError('ManagedModules can only be owned by the application main thread.')
+        if name in cls._managed_modules:
+            raise ValueError(f'ManagedModules must have unique names. "{name}" already present.')
+        obj = super().__new__(cls,
+                              name=name,
+                              base=base,
+                              config=config,
+                              qudi_main=qudi_main,
+                              module_manager=module_manager,
+                              parent=parent)
+        cls._managed_modules[name] = obj
+        return obj
 
-        self._mutex = Mutex()
-        self._fsm = ModuleStateMachine()
+    def __init__(self,
+                 name: str,
+                 base: str,
+                 config: Mapping[str, Any],
+                 qudi_main: object,
+                 module_manager: object,
+                 parent: Optional[QtCore.QObject] = None) -> None:
+        super().__init__(parent=parent)
 
-        self._name = name            # Each qudi module needs a unique string identifier
-        self._base = base            # Remember qudi module base
-        self._config = config        # Save reference to config
+        self._name = name  # Each qudi module needs a unique string identifier
+        self._base = base  # Remember qudi module base
+        self._config = config  # Save reference to config
+        # Create weak references to qudi main and module manager objects
         self._qudi_main_ref = weakref.ref(qudi_main)
         self._module_manager_ref = weakref.ref(module_manager)
-        self._instance = None        # Holds the qudi module instance after loading the module
 
         self._required_modules = set()
         self._dependent_modules = set()
@@ -79,20 +105,12 @@ class ManagedModule:
         return self._base
 
     @property
-    def instance(self) -> Base:
-        return self._instance
-
-    @property
     def required_module_names(self) -> Set[str]:
         return {mod.name for mod in self._required_modules}
 
     @property
     def dependent_module_names(self) -> Set[str]:
         return {mod.name for mod in self._dependent_modules}
-
-    @property
-    def state(self) -> str:
-        return self._fsm.current
 
     @property
     def is_loaded(self) -> bool:
@@ -107,75 +125,328 @@ class ManagedModule:
         return self.state == 'busy'
 
     def register_dependent_module(self, module: object) -> None:
-        with self._mutex:
-            if self.is_active:
-                self._dependent_modules.add(module)
-            else:
-                raise RuntimeError(f'Tried to register dependent module "{module.name}" on '
-                                   f'non-active module "{self.name}"')
+        if self.is_active:
+            self._dependent_modules.add(module)
+        else:
+            raise RuntimeError(f'Tried to register dependent module "{module.name}" on '
+                               f'non-active module "{self.name}"')
 
+    def unregister_dependent_module(self, module: object) -> None:
+        self._dependent_modules.discard(module)
+
+    def get_ranking_dependent_modules(self) -> set:
+        ranking_dependent_modules = set()
+        for module in self._dependent_modules:
+            if module.is_active:
+                ranking_modules = module.get_ranking_dependent_modules()
+                if ranking_modules:
+                    ranking_dependent_modules.update(ranking_modules)
+                else:
+                    ranking_dependent_modules.add(module)
+        return ranking_dependent_modules
+
+    @abstractmethod
     def load(self) -> None:
-        with self._mutex:
-            self._fsm.load()
+        pass
 
+    @abstractmethod
     def reload(self) -> None:
-        with self._mutex:
-            self._fsm.reload()
+        pass
 
+    @abstractmethod
     def activate(self) -> None:
-        with self._mutex:
-            self._fsm.activate()
+        pass
 
+    @abstractmethod
     def deactivate(self) -> None:
-        with self._mutex:
-            self._fsm.deactivate()
+        pass
 
+    @abstractmethod
     def lock(self) -> None:
-        if self._mutex.try_lock():
-            try:
-                self._fsm.lock()
-            finally:
-                self._mutex.unlock()
+        pass
+        # if self._mutex.try_lock():
+        #     try:
+        #         self._lock()
+        #     finally:
+        #         self._mutex.unlock()
+        #         self.sigStateChanged.emit(self, self.state)
 
+    @abstractmethod
     def unlock(self) -> None:
-        if self._mutex.try_lock():
-            try:
-                self._fsm.unlock()
-            finally:
-                self._mutex.unlock()
-
-    @abstractmethod
-    def _load(self) -> None:
         pass
 
     @abstractmethod
-    def _reload(self) -> None:
+    def clear_app_data(self) -> None:
         pass
-
-    @abstractmethod
-    def _activate(self) -> None:
-        pass
-
-    @abstractmethod
-    def _deactivate(self) -> None:
-        pass
-
-    @abstractmethod
-    def _lock(self) -> None:
-        pass
-
-    @abstractmethod
-    def _unlock(self) -> None:
-        pass
-
-    # @property
-    # def is_remote(self) -> bool:
-    #     return bool(self._remote_url)
 
     @property
     @abstractmethod
-    def status_file_path(self) -> str:
+    def has_app_data(self) -> bool:
         pass
+
+    @property
+    @abstractmethod
+    def instance(self) -> Union[None, Base]:
+        pass
+
+    @property
+    @abstractmethod
+    def state(self) -> str:
+        pass
+
+
+class LocalManagedModule(ManagedModule):
+    """ Local qudi module
+    """
+
+    def __init__(self,
+                 name: str,
+                 base: str,
+                 config: Mapping[str, Any],
+                 qudi_main: object,
+                 module_manager: object,
+                 parent: Optional[QtCore.QObject] = None) -> None:
+        super().__init__(name=name,
+                         base=base,
+                         config=config,
+                         qudi_main=qudi_main,
+                         module_manager=module_manager,
+                         parent=parent)
+        # Extract module and class name
+        self._module_name, self._class_name = self._config['module.Class'].rsplit('.', 1)
+        # Remember connections by name
+        self._connections = self._config['connect']
+        # See if remote access to this module is allowed
+        self._allow_remote = self._config['allow_remote']
+        # Get module options
+        self._options = self._config['options']
+        # Reference to created module instance (after loading)
+        self._instance = None
+        self._status_file_path = get_module_app_data_path(self._class_name,
+                                                          self._module_name,
+                                                          self.name)
+        self._thread_name = f'mod-{self.base}-{self.name}'
+
+    @property
+    def instance(self) -> Union[None, Base]:
+        return self._instance
+
+    @property
+    def has_app_data(self) -> bool:
+        return os.path.exists(self._status_file_path)
+
+    @property
+    def state(self) -> str:
+        try:
+            return self._instance.module_state()
+        except AttributeError:
+            return 'not loaded'
+
+    def load(self, reload: Optional[bool] = False) -> None:
+        # Do nothing if already loaded
+        if self.is_loaded:
+            return
+
+        try:
+            # qudi module import
+            mod = importlib.import_module(f'qudi.{self.base}.{self._module_name}')
+            if reload:
+                mod = importlib.reload(mod)
+
+            # Try getting qudi module class from imported module
+            mod_class = getattr(mod, self._class_name, None)
+            if mod_class is None:
+                raise AttributeError(
+                    f'Could not import "{self._class_name}" from "qudi.{self.base}.{self._module_name}"'
+                )
+
+            # Check if imported class is a valid qudi module class
+            if not issubclass(mod_class, Base):
+                raise TypeError(
+                    f'Qudi module class "qudi.{self.base}.{self._module_name}.{self._class_name}" is '
+                    f'no subclass of "{Base.__module__}.{Base.__name__}"'
+                )
+
+            # Try to instantiate the imported qudi module class
+            try:
+                self._instance = mod_class(qudi_main_weakref=self._qudi_main_ref,
+                                           name=self.name,
+                                           config=self._options)
+                self._required_modules.clear()
+                self._instance.module_state.sigStateChanged.connect(self._state_change_callback)
+            except BaseException as err:
+                self._instance = None
+                raise RuntimeError(
+                    f'Exception during initialization of qudi module "{self.name}" from '
+                    f'"qudi.{self.base}.{self._module_name}.{self._class_name}"'
+                ) from err
+        finally:
+            self.sigStateChanged.emit(self, self.state)
+
+    def reload(self) -> None:
+        # Do a normal load if it was not already loaded
+        if not self.is_loaded:
+            return self.load()
+
+        # Deactivate if active
+        was_active = self.is_active
+        if was_active:
+            modules_to_activate = self.get_ranking_dependent_modules()
+            self.deactivate()
+        else:
+            modules_to_activate = set()
+
+        # reload module
+        self._instance.module_state.sigStateChanged.disconnect(self._state_change_callback)
+        self._instance = None
+        self.load(reload=True)
+
+        # re-activate all modules that have been active before
+        if was_active:
+            self.activate()
+            for module in modules_to_activate:
+                module.activate()
+
+    def activate(self) -> None:
+        # Return early if already active
+        if self.is_active:
+            # If it is a GUI module, show it again.
+            if self.base == 'gui':
+                self._instance.show()
+            return
+
+        # Load first if not already loaded
+        self.load()
+
+        # Recursive activation of required modules
+        modules_to_connect = dict()
+        for connector_name, module_name in self._connections.items():
+            try:
+                modules_to_connect[connector_name] = self._managed_modules[module_name]
+            except KeyError:
+                continue
+            modules_to_connect[connector_name].activate()
+
+        logger.info(
+            f'Activating {self.base} module "{self.name}" from '
+            f'{self._module_name}.{self._class_name}'
+        )
+
+        try:
+            # Establish module interconnections via Connector meta object in qudi module instance
+            self._instance.connect_modules(
+                {conn: mod.instance for conn, mod in modules_to_connect.items()}
+            )
+
+            # Activate this module
+            if self._instance.module_threaded:
+                thread_manager = ThreadManager.instance()
+                if thread_manager is None:
+                    raise RuntimeError('No ThreadManager instantiated in current qudi process. '
+                                       'Unable to activate threaded modules.')
+                thread = thread_manager.get_new_thread(self._thread_name)
+                self._instance.moveToThread(thread)
+                thread.start()
+                try:
+                    QtCore.QMetaObject.invokeMethod(self._instance.module_state,
+                                                    'activate',
+                                                    QtCore.Qt.BlockingQueuedConnection)
+                finally:
+                    # Cleanup if activation was not successful
+                    if not self.is_active:
+                        QtCore.QMetaObject.invokeMethod(self._instance,
+                                                        'move_to_main_thread',
+                                                        QtCore.Qt.BlockingQueuedConnection)
+                        thread_manager.quit_thread(self._thread_name)
+                        thread_manager.join_thread(self._thread_name)
+            else:
+                self._instance.module_state.activate()
+
+            if self.is_active:
+                # Register dependency in connected modules
+                for module in modules_to_connect.values():
+                    module.register_dependent_module(self)
+                    self._required_modules.add(module)
+            else:
+                # Raise exception if by some reason no exception propagated to here and the
+                # activation is still unsuccessful.
+                try:
+                    self._instance.disconnect_modules()
+                except:
+                    pass
+                raise RuntimeError(
+                    f'Failed to activate {self.base} module "{self.name}" from {self._module_name}.'
+                    f'{self._class_name}'
+                )
+        finally:
+            self.sigStateChanged.emit(self, self.state)
+            self.sigAppDataChanged.emit(self, self.has_app_data)
+
+    def deactivate(self) -> None:
+        # Return early if nothing to do
+        if not self.is_active:
+            return
+
+        # Recursively deactivate dependent modules. Create a list-copy of the set first.
+        for module in list(self._dependent_modules):
+            module.deactivate()
+
+        logger.info(f'Deactivating {self.base} module "{self.name}" from '
+                    f'{self._module_name}.{self._class_name}')
+
+        # Actual deactivation of this module
+        try:
+            if self._instance.module_threaded:
+                thread_manager = ThreadManager.instance()
+                if thread_manager is None:
+                    raise RuntimeError('No ThreadManager instantiated in current qudi process. '
+                                       'Unable to properly deactivate threaded modules.')
+                try:
+                    QtCore.QMetaObject.invokeMethod(self._instance.module_state,
+                                                    'deactivate',
+                                                    QtCore.Qt.BlockingQueuedConnection)
+                finally:
+                    QtCore.QMetaObject.invokeMethod(self._instance,
+                                                    'move_to_main_thread',
+                                                    QtCore.Qt.BlockingQueuedConnection)
+                    thread_manager.quit_thread(self._thread_name)
+                    thread_manager.join_thread(self._thread_name)
+            else:
+                self._instance.module_state.deactivate()
+
+            QtCore.QCoreApplication.instance().processEvents()  # ToDo: Is this still needed?
+
+            # Disconnect modules from this module
+            self._instance.disconnect_modules()
+
+            # Raise exception if by some reason no exception propagated to here and the deactivation
+            # is still unsuccessful.
+            if self.is_active:
+                raise RuntimeError(
+                    f'Failed to deactivate {self.base} module "{self.name}" from '
+                    f'{self._module_name}.{self._class_name}'
+                )
+        finally:
+            self.sigStateChanged.emit(self, self.state)
+            self.sigAppDataChanged.emit(self, self.has_app_data)
+
+    def lock(self) -> None:
+        if self._instance is None:
+            raise RuntimeError(f'Unable to lock module "{self.name}". Module is not loaded yet.')
+        self._instance.module_state.lock()
+
+    def unlock(self) -> None:
+        if self._instance is None:
+            raise RuntimeError(f'Unable to unlock module "{self.name}". Module is not loaded yet.')
+        self._instance.module_state.unlock()
+
+    def clear_app_data(self) -> None:
+        try:
+            os.remove(self._status_file_path)
+        except FileNotFoundError:
+            pass
+        finally:
+            self.sigAppDataChanged.emit(self, self.has_app_data)
 
 
 class ManagedModule(QtCore.QObject):
@@ -594,7 +865,7 @@ class ManagedModule(QtCore.QObject):
                 # qudi module import and reload
                 mod = importlib.import_module(f'qudi.{self.base}.{self.module}')
                 if reload:
-                    importlib.reload(mod)
+                    mod = importlib.reload(mod)
 
                 # Try getting qudi module class from imported module
                 mod_class = getattr(mod, self.class_name, None)
