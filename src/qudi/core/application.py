@@ -134,6 +134,7 @@ class Qudi(QtCore.QObject):
                 ssl_version=remote_server_config.get('ssl_version', None),
                 cert_reqs=remote_server_config.get('cert_reqs', None),
                 ciphers=remote_server_config.get('ciphers', None),
+                module_manager=self.module_manager,
                 force_remote_calls_by_value=self.configuration.force_remote_calls_by_value
             )
         else:
@@ -388,7 +389,7 @@ class Qudi(QtCore.QObject):
             QtCore.QCoreApplication.instance().processEvents()
             self.log.info('Deactivating modules...')
             print('> Deactivating modules...')
-            self.module_manager.stop_all_modules()
+            self.module_manager.deactivate_all_modules()
             self.module_manager.clear()
             QtCore.QCoreApplication.instance().processEvents()
             if not self.no_gui:

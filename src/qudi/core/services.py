@@ -19,176 +19,25 @@ You should have received a copy of the GNU Lesser General Public License along w
 If not, see <https://www.gnu.org/licenses/>.
 """
 
-__all__ = ['RemoteModulesService', 'QudiNamespaceService', 'connect_remote_module']
+__all__ = ['RemoteModulesService', 'QudiNamespaceService']
 
 import rpyc
 import weakref
 from functools import wraps
-from urllib.parse import urlparse
 from inspect import signature, isfunction, ismethod
-from typing import Optional, Tuple
+from typing import Optional, Union
 
 from qudi.util.mutex import Mutex
 from qudi.util.models import ListTableModel
 from qudi.util.network import netobtain
+from qudi.core.modulemanager import ModuleManager
 from qudi.core.logger import get_logger
+from qudi.core.module import Base
 
 logger = get_logger(__name__)
 
 
-def connect_remote_module(remote_url: str,
-                          certfile: Optional[str] = None,
-                          keyfile: Optional[str] = None,
-                          protocol_config: Optional[dict] = None
-                          ) -> Tuple[rpyc.Connection, str]:
-    if protocol_config is None:
-        protocol_config = {'allow_all_attrs'     : True,
-                           'allow_setattr'       : True,
-                           'allow_delattr'       : True,
-                           'allow_pickle'        : True,
-                           'sync_request_timeout': 3600}
-    parsed = urlparse(remote_url)
-    connection = rpyc.ssl_connect(host=parsed.hostname,
-                                  port=parsed.port,
-                                  config=protocol_config,
-                                  certfile=certfile,
-                                  keyfile=keyfile)
-    return connection, parsed.path.replace('/', '')
-
-
-class RemoteModulesService(rpyc.Service):
-    """ An RPyC service that has a module list.
-    """
-    ALIASES = ['RemoteModules']
-
-    def __init__(self, *args, force_remote_calls_by_value=False, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._thread_lock = Mutex()
-        self._force_remote_calls_by_value = force_remote_calls_by_value
-        self.shared_modules = ListTableModel(headers='Shared Module')
-
-    def share_module(self, module_name: str):
-        with self._thread_lock:
-            if module_name in self.shared_modules:
-                logger.warning(f'Module with name "{module_name}" already shared')
-            else:
-                self.shared_modules.append(module_name)
-
-    def remove_shared_module(self, module_name: str):
-        with self._thread_lock:
-            self.shared_modules.remove(module_name)
-
-    def on_connect(self, conn):
-        """ code that runs when a connection is created
-        """
-        host, port = conn._config['endpoints'][1]
-        logger.info(f'Client connected to remote modules service from [{host}]:{port:d}')
-
-    def on_disconnect(self, conn):
-        """ code that runs when the connection is closing
-        """
-        host, port = conn._config['endpoints'][1]
-        logger.info(f'Client [{host}]:{port:d} disconnected from remote modules service')
-
-    def exposed_get_module_manager(self) -> object:
-        """ Return the ModuleManager singleton to the remote client.
-        """
-        from qudi.core.modulemanager import ModuleManager
-        return ModuleManager.instance()
-
-    def exposed_get_module_instance(self, module_name: str) -> object:
-        """ Try to activate a module and return a success flag.
-        """
-        if module_name not in self.shared_modules:
-            logger.error(f'Client requested a module ("{module_name}") that is not shared.')
-            return None
-        try:
-            instance = self.exposed_get_module_manager().get_module_instance(module_name)
-            if self._force_remote_calls_by_value and instance is not None:
-                return ModuleRpycProxy(instance)
-            else:
-                return instance
-        except:
-            logger.exception(
-                f'Exception while retrieving module instance "{module_name}" for client.'
-            )
-        return None
-
-    def exposed_get_available_module_names(self):
-        """ Returns the currently shared module names independent of the current module state.
-
-        @return tuple: Names of the currently shared modules
-        """
-        with self._thread_lock:
-            return tuple(self.shared_modules)
-
-
-class QudiNamespaceService(rpyc.Service):
-    """ An RPyC service providing a namespace dict containing references to all active qudi module
-    instances as well as a reference to the qudi application itself.
-    """
-    ALIASES = ['QudiNamespace']
-
-    def __init__(self, *args, qudi, force_remote_calls_by_value=False, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.__qudi_ref = weakref.ref(qudi)
-        self._notifier_callbacks = dict()
-        self._force_remote_calls_by_value = force_remote_calls_by_value
-
-    @property
-    def _qudi(self):
-        qudi = self.__qudi_ref()
-        if qudi is None:
-            raise RuntimeError('Dead qudi application reference encountered')
-        return qudi
-
-    @property
-    def _module_manager(self):
-        manager = self._qudi.module_manager
-        if manager is None:
-            raise RuntimeError('No module manager initialized in qudi application')
-        return manager
-
-    def on_connect(self, conn):
-        """ code that runs when a connection is created
-        """
-        try:
-            self._notifier_callbacks[conn] = rpyc.async_(conn.root.modules_changed)
-        except AttributeError:
-            pass
-        host, port = conn._config['endpoints'][1]
-        logger.info(f'Client connected to local module service from [{host}]:{port:d}')
-
-    def on_disconnect(self, conn):
-        """ code that runs when the connection is closing
-        """
-        self._notifier_callbacks.pop(conn, None)
-        host, port = conn._config['endpoints'][1]
-        logger.info(f'Client [{host}]:{port:d} disconnected from local module service')
-
-    def notify_module_change(self):
-        logger.debug('Local module server has detected a module state change and sends async '
-                     'notifier signals to all clients')
-        for callback in self._notifier_callbacks.values():
-            callback()
-
-    def exposed_get_namespace_dict(self):
-        """ Returns the instances of the currently active modules as well as a reference to the
-        qudi application itself.
-
-        @return dict: Names (keys) and object references (values)
-        """
-        if self._force_remote_calls_by_value:
-            mods = {name: ModuleRpycProxy(mod.instance) for name, mod in
-                    self._module_manager.modules.items() if mod.is_active}
-        else:
-            mods = {name: mod.instance for name, mod in self._module_manager.modules.items() if
-                    mod.is_active}
-        mods['qudi'] = self._qudi
-        return mods
-
-
-class ModuleRpycProxy:
+class _ModuleRpycProxy:
     """ Instances of this class serve as proxies for qudi modules accessed via RPyC.
     It currently wraps all API methods (none- and single-underscore methods) to only receive
     parameters "by value", i.e. using qudi.util.network.netobtain. This will only work if all
@@ -278,3 +127,203 @@ class ModuleRpycProxy:
         """
         theclass = cls._create_class_proxy(obj.__class__)
         return object.__new__(theclass)
+
+
+class RemoteModulesService(rpyc.Service):
+    """ An RPyC service that has a module list.
+    """
+    ALIASES = ['RemoteModules']
+
+    def __init__(self,
+                 module_manager: ModuleManager,
+                 force_remote_calls_by_value: Optional[bool] = False,
+                 **kwargs
+                 ) -> None:
+        super().__init__(**kwargs)
+        self._thread_lock = Mutex()
+        self.__module_manager_ref = weakref.ref(module_manager)
+        self._force_remote_calls_by_value = force_remote_calls_by_value
+        self.shared_modules = ListTableModel(headers='Shared Module')
+
+    def share_module(self, module_name: str):
+        with self._thread_lock:
+            if module_name in self.shared_modules:
+                logger.warning(f'Module with name "{module_name}" already shared')
+            else:
+                self.shared_modules.append(module_name)
+
+    def remove_shared_module(self, module_name: str):
+        with self._thread_lock:
+            self.shared_modules.remove(module_name)
+
+    @property
+    def _module_manager(self) -> ModuleManager:
+        module_manager = self.__module_manager_ref()
+        if module_manager is None:
+            raise RuntimeError('ModuleManager reference died unexpectedly')
+        return module_manager
+
+    def _check_module_name(self, module_name: str) -> None:
+        if module_name not in self.shared_modules:
+            raise ValueError(f'Client requested module "{module_name}". No such module is shared.')
+
+    def on_connect(self, conn):
+        """ code that runs when a connection is created
+        """
+        host, port = conn._config['endpoints'][1]
+        logger.info(f'Client connected to remote modules service from [{host}]:{port:d}')
+
+    def on_disconnect(self, conn):
+        """ code that runs when the connection is closing
+        """
+        host, port = conn._config['endpoints'][1]
+        logger.info(f'Client [{host}]:{port:d} disconnected from remote modules service')
+
+    def exposed_load_module(self, module_name: str) -> bool:
+        with self._thread_lock:
+            try:
+                self._check_module_name(module_name)
+                self._module_manager.load_module(module_name)
+            except:
+                logger.exception(f'Remote client unable to load module "{module_name}":')
+                return False
+            return True
+
+    def exposed_reload_module(self, module_name: str) -> bool:
+        with self._thread_lock:
+            try:
+                self._check_module_name(module_name)
+                self._module_manager.reload_module(module_name)
+            except:
+                logger.exception(f'Remote client unable to reload module "{module_name}":')
+                return False
+            return True
+
+    def exposed_activate_module(self, module_name: str) -> bool:
+        with self._thread_lock:
+            try:
+                self._check_module_name(module_name)
+                self._module_manager.activate_module(module_name)
+            except:
+                logger.exception(f'Remote client unable to activate module "{module_name}":')
+                return False
+            return True
+
+    def exposed_deactivate_module(self, module_name: str) -> bool:
+        with self._thread_lock:
+            try:
+                self._check_module_name(module_name)
+                self._module_manager.deactivate_module(module_name)
+            except:
+                logger.exception(f'Remote client unable to deactivate module "{module_name}":')
+                return False
+            return True
+
+    def exposed_get_module_instance(self, module_name: str) -> Union[None, Base, _ModuleRpycProxy]:
+        with self._thread_lock:
+            try:
+                self._check_module_name(module_name)
+                instance = self._module_manager.get_module_instance(module_name)
+                if self._force_remote_calls_by_value and instance is not None:
+                    return _ModuleRpycProxy(instance)
+                else:
+                    return instance
+            except:
+                logger.exception(
+                    f'Remote client unable to retrieve module instance "{module_name}":'
+                )
+            return None
+
+    def exposed_module_has_app_data(self, module_name: str) -> bool:
+        with self._thread_lock:
+            try:
+                self._check_module_name(module_name)
+                return self._module_manager.module_has_app_data(module_name)
+            except:
+                logger.exception(
+                    f'Remote client unable to check if module "{module_name}" has AppData:'
+                )
+            return False
+
+    def exposed_clear_module_app_data(self, module_name: str) -> bool:
+        with self._thread_lock:
+            try:
+                self._check_module_name(module_name)
+                self._module_manager.clear_module_app_data(module_name)
+            except:
+                logger.exception(f'Remote client unable to clear module "{module_name}" AppData:')
+                return False
+            return True
+
+    def exposed_get_available_module_names(self):
+        """ Returns the currently shared module names independent of the current module state.
+
+        @return tuple: Names of the currently shared modules
+        """
+        with self._thread_lock:
+            return tuple(self.shared_modules)
+
+
+class QudiNamespaceService(rpyc.Service):
+    """ An RPyC service providing a namespace dict containing references to all active qudi module
+    instances as well as a reference to the qudi application itself.
+    """
+    ALIASES = ['QudiNamespace']
+
+    def __init__(self, *args, qudi, force_remote_calls_by_value=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.__qudi_ref = weakref.ref(qudi)
+        self._notifier_callbacks = dict()
+        self._force_remote_calls_by_value = force_remote_calls_by_value
+
+    @property
+    def _qudi(self):
+        qudi = self.__qudi_ref()
+        if qudi is None:
+            raise RuntimeError('Dead qudi application reference encountered')
+        return qudi
+
+    @property
+    def _module_manager(self):
+        manager = self._qudi.module_manager
+        if manager is None:
+            raise RuntimeError('No module manager initialized in qudi application')
+        return manager
+
+    def on_connect(self, conn):
+        """ code that runs when a connection is created
+        """
+        try:
+            self._notifier_callbacks[conn] = rpyc.async_(conn.root.modules_changed)
+        except AttributeError:
+            pass
+        host, port = conn._config['endpoints'][1]
+        logger.info(f'Client connected to local module service from [{host}]:{port:d}')
+
+    def on_disconnect(self, conn):
+        """ code that runs when the connection is closing
+        """
+        self._notifier_callbacks.pop(conn, None)
+        host, port = conn._config['endpoints'][1]
+        logger.info(f'Client [{host}]:{port:d} disconnected from local module service')
+
+    def notify_module_change(self):
+        logger.debug('Local module server has detected a module state change and sends async '
+                     'notifier signals to all clients')
+        for callback in self._notifier_callbacks.values():
+            callback()
+
+    def exposed_get_namespace_dict(self):
+        """ Returns the instances of the currently active modules as well as a reference to the
+        qudi application itself.
+
+        @return dict: Names (keys) and object references (values)
+        """
+        if self._force_remote_calls_by_value:
+            mods = {name: _ModuleRpycProxy(mod.instance) for name, mod in
+                    self._module_manager.modules.items() if mod.is_active}
+        else:
+            mods = {name: mod.instance for name, mod in self._module_manager.modules.items() if
+                    mod.is_active}
+        mods['qudi'] = self._qudi
+        return mods

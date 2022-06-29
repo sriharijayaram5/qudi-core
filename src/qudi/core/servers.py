@@ -19,10 +19,7 @@ You should have received a copy of the GNU Lesser General Public License along w
 If not, see <https://www.gnu.org/licenses/>.
 """
 
-__all__ = ['get_remote_module_instance', 'get_remote_module_state', 'toggle_remote_module_lock',
-           'activate_remote_module', 'deactivate_remote_module', 'reload_remote_module',
-           'clear_remote_module_app_data', 'remote_module_has_app_data', 'BaseServer',
-           'RemoteModulesServer', 'QudiNamespaceServer']
+__all__ = ['BaseServer', 'RemoteModulesServer', 'QudiNamespaceServer']
 
 import ssl
 import rpyc
@@ -200,8 +197,9 @@ class RemoteModulesServer(BaseServer):
     """
     """
 
-    def __init__(self, force_remote_calls_by_value=False, **kwargs):
+    def __init__(self, module_manager, force_remote_calls_by_value=False, **kwargs):
         kwargs['service_instance'] = RemoteModulesService(
+            module_manager=module_manager,
             force_remote_calls_by_value=force_remote_calls_by_value
         )
         super().__init__(**kwargs)
