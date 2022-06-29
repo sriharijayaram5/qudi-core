@@ -329,14 +329,14 @@ class ModuleWidget(QtWidgets.QTabWidget):
             delegate.sigReloadClicked.connect(self.sigReloadModule)
             delegate.sigCleanupClicked.connect(self.sigCleanupModule)
 
-    @QtCore.Slot(dict)
-    def update_modules(self, modules_dict):
+    @QtCore.Slot(dict, dict, dict)
+    def update_modules(self, module_names_by_base, module_states, module_app_data_states):
         for base, model in self.list_models.items():
-            model.reset_modules(
-                {name: mod.state for name, mod in modules_dict.items() if mod.base == base},
-                {name: mod.has_app_data for name, mod in modules_dict.items() if
-                 mod.base == base}
-            )
+            base_modules = module_names_by_base[base]
+            states = {name: state for name, state in module_states.items() if name in base_modules}
+            app_data_states = {name: state for name, state in module_app_data_states.items() if
+                               name in base_modules}
+            model.reset_modules(states, app_data_states)
         return
 
     @QtCore.Slot(str, str, str)

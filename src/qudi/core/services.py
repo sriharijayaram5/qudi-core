@@ -320,10 +320,12 @@ class QudiNamespaceService(rpyc.Service):
         @return dict: Names (keys) and object references (values)
         """
         if self._force_remote_calls_by_value:
-            mods = {name: _ModuleRpycProxy(mod.instance) for name, mod in
-                    self._module_manager.modules.items() if mod.is_active}
+            mods = {name: _ModuleRpycProxy(instance) for name, instance in
+                    self._module_manager.module_instances.items() if
+                    (instance is not None and instance.module_state() != 'deactivated')}
         else:
-            mods = {name: mod.instance for name, mod in self._module_manager.modules.items() if
-                    mod.is_active}
+            mods = {name: instance for name, instance in
+                    self._module_manager.module_instances.items() if
+                    (instance is not None and instance.module_state() != 'deactivated')}
         mods['qudi'] = self._qudi
         return mods

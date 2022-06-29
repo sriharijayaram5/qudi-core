@@ -124,7 +124,7 @@ class QudiMainGui(GuiBase):
             qudi_main.prompt_restart, QtCore.Qt.QueuedConnection)
         self.mw.action_open_configuration_editor.triggered.connect(self.new_configuration)
         self.mw.action_load_all_modules.triggered.connect(
-            qudi_main.module_manager.start_all_modules)
+            qudi_main.module_manager.activate_all_modules)
         self.mw.action_view_default.triggered.connect(self.reset_default_layout)
         # Connect signals from manager
         qudi_main.configuration.sigConfigChanged.connect(self.update_config_widget)
@@ -365,13 +365,14 @@ class QudiMainGui(GuiBase):
             child.setText(0, str(value))
             item.addChild(child)
 
-    @QtCore.Slot(dict)
-    def update_configured_modules(self, modules=None):
+    @QtCore.Slot()
+    def update_configured_modules(self):
         """ Clear and refill the module list widget
         """
-        if modules is None:
-            modules = self._qudi_main.module_manager.modules
-        self.mw.module_widget.update_modules(modules)
+        module_manager = self._qudi_main.module_manager
+        self.mw.module_widget.update_modules(module_manager.module_names_by_base,
+                                             module_manager.module_states,
+                                             module_manager.module_app_data_states)
 
     @QtCore.Slot(str, str, str)
     def update_module_state(self, base, name, state):

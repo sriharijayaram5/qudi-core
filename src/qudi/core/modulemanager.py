@@ -402,7 +402,7 @@ class LocalManagedModule(ManagedModule):
             else:
                 self._instance.module_state.deactivate()
 
-            QtCore.QCoreApplication.instance().processEvents()  # ToDo: Is this still needed?
+            # QtCore.QCoreApplication.instance().processEvents()  # ToDo: Is this still needed?
 
             # Disconnect modules from this module
             self._instance.disconnect_modules()
@@ -701,9 +701,23 @@ class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
             return list(self._modules)
 
     @property
+    def module_names_by_base(self) -> Dict[str, List[str]]:
+        with self._lock:
+            return {
+                'gui'     : [name for name, mod in self._modules.items() if mod.base == 'gui'],
+                'logic'   : [name for name, mod in self._modules.items() if mod.base == 'logic'],
+                'hardware': [name for name, mod in self._modules.items() if mod.base == 'hardware']
+            }
+
+    @property
     def module_states(self) -> Dict[str, str]:
         with self._lock:
             return {name: mod.state for name, mod in self._modules.items()}
+
+    @property
+    def module_app_data_states(self) -> Dict[str, bool]:
+        with self._lock:
+            return {name: mod.has_app_data for name, mod in self._modules.items()}
 
     @property
     def module_instances(self) -> Dict[str, ManagedModule]:
@@ -741,7 +755,7 @@ class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
                    ) -> None:
         with self._lock:
             self._add_module(name, base, configuration, allow_overwrite)
-            self.sigManagedModulesChanged.emit(self.modules)
+            self.sigManagedModulesChanged.emit()
 
     def _add_module(self,
                     name: str,
@@ -840,7 +854,7 @@ class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
         with self._lock:
             for mod_name in list(self._modules):
                 self._remove_module(mod_name, ignore_missing=True)
-            self.sigManagedModulesChanged.emit()
+        self.sigManagedModulesChanged.emit()
 
     @QtCore.Slot(object, str)
     def _module_state_change_callback(self, module: ManagedModule, state: str) -> None:

@@ -339,11 +339,9 @@ class Qudi(QtCore.QObject):
                 return
             self._shutting_down = True
             if prompt:
-                locked_modules = False
-                for module in self.module_manager.values():
-                    if module.is_busy:
-                        locked_modules = True
-                        break
+                locked_modules = any(
+                    state == 'busy' for state in self.module_manager.module_states.values()
+                )
 
                 if self.no_gui:
                     # command line prompt
