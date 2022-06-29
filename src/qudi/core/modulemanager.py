@@ -25,8 +25,7 @@ import os
 import importlib
 import weakref
 from abc import abstractmethod
-from typing import Optional, Any, Union, Mapping, Dict, List, Set, Tuple
-from functools import partial
+from typing import Optional, Any, Union, Mapping, Dict, List, Set
 from PySide2 import QtCore
 
 from qudi.util.mutex import Mutex   # provides access serialization between threads
@@ -212,7 +211,7 @@ class LocalManagedModule(ManagedModule):
         # Reference to created module instance (after loading)
         self._instance = None
         self._status_file_path = get_module_app_data_path(self._class_name,
-                                                          self._module_name,
+                                                          self.base,
                                                           self.name)
         self._thread_name = f'mod-{self.base}-{self.name}'
 
@@ -714,7 +713,7 @@ class ModuleManager(QtCore.QObject):
     def remove_module(self, module_name: str, ignore_missing: Optional[bool] = False) -> None:
         with self._lock:
             self._remove_module(module_name, ignore_missing)
-            self.sigManagedModulesChanged.emit()
+        self.sigManagedModulesChanged.emit()
 
     def _remove_module(self, module_name: str, ignore_missing: Optional[bool] = False) -> None:
         module = self._modules.pop(module_name, None)
@@ -741,7 +740,7 @@ class ModuleManager(QtCore.QObject):
                    ) -> None:
         with self._lock:
             self._add_module(name, base, configuration, allow_overwrite)
-            self.sigManagedModulesChanged.emit()
+        self.sigManagedModulesChanged.emit()
 
     def _add_module(self,
                     name: str,
@@ -848,7 +847,7 @@ class ModuleManager(QtCore.QObject):
         with self._lock:
             for mod_name in list(self._modules):
                 self._remove_module(mod_name, ignore_missing=True)
-            self.sigManagedModulesChanged.emit()
+        self.sigManagedModulesChanged.emit()
 
     @QtCore.Slot(object, str)
     def _module_state_change_callback(self, module: ManagedModule, state: str) -> None:
