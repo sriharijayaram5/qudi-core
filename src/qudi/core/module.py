@@ -58,9 +58,9 @@ class ModuleStateMachine(Fysom, QtCore.QObject):
         fsm_cfg = {'initial': 'deactivated',
                    'events': [{'name': 'activate', 'src': 'deactivated', 'dst': 'idle'},
                               {'name': 'deactivate', 'src': 'idle', 'dst': 'deactivated'},
-                              {'name': 'deactivate', 'src': 'locked', 'dst': 'deactivated'},
-                              {'name': 'lock', 'src': 'idle', 'dst': 'locked'},
-                              {'name': 'unlock', 'src': 'locked', 'dst': 'idle'}],
+                              {'name': 'deactivate', 'src': 'busy', 'dst': 'deactivated'},
+                              {'name': 'lock', 'src': 'idle', 'dst': 'busy'},
+                              {'name': 'unlock', 'src': 'busy', 'dst': 'idle'}],
                    'callbacks': callbacks}
 
         # Initialise state machine:
@@ -200,16 +200,12 @@ class Base(QtCore.QObject, metaclass=ModuleMeta):
     def __hash__(self):
         return self.module_uuid.int
 
-    @QtCore.Slot()
-    def move_to_main_thread(self) -> None:
+    def __move_to_main_thread(self) -> None:
         """ Method that will move this module into the main/manager thread.
         """
-        if QtCore.QThread.currentThread() != self.thread():
-            QtCore.QMetaObject.invokeMethod(self,
-                                            'move_to_main_thread',
-                                            QtCore.Qt.BlockingQueuedConnection)
-        else:
-            self.moveToThread(QtCore.QCoreApplication.instance().thread())
+        main_thread = QtCore.QCoreApplication.instance().thread()
+        if self.thread() is not main_thread:
+            self.moveToThread(main_thread)
 
     @property
     def module_thread(self) -> Union[QtCore.QThread, None]:
@@ -286,12 +282,17 @@ class Base(QtCore.QObject, metaclass=ModuleMeta):
             self.on_activate()
         except:
             self.log.exception('Exception during activation:')
+            try:
+                self.__move_to_main_thread()
+            except:
+                pass
             return False
         return True
 
     def __deactivation_callback(self, event=None) -> bool:
         """ Invoke on_deactivate method and save status variables afterwards even if deactivation
-        fails.
+        fails. Also moves threaded modules to main thread.
+        Ensures this fysom callback always returns True (always deactivates regardless of errors)
         """
         try:
             self.on_deactivate()
@@ -299,7 +300,15 @@ class Base(QtCore.QObject, metaclass=ModuleMeta):
             self.log.exception('Exception during deactivation:')
         finally:
             # save status variables even if deactivation failed
-            self._dump_status_variables()
+            try:
+                self._dump_status_variables()
+            except:
+                self.log.exception('Failed to dump status variables upon deactivation:')
+            finally:
+                try:
+                    self.__move_to_main_thread()
+                except:
+                    self.log.exception('Failed to move module to main thread:')
         return True
 
     def _load_status_variables(self) -> None:

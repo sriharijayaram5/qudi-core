@@ -341,9 +341,6 @@ class LocalManagedModule(ManagedModule):
                 finally:
                     # Cleanup if activation was not successful
                     if not self.is_active:
-                        QtCore.QMetaObject.invokeMethod(self._instance,
-                                                        'move_to_main_thread',
-                                                        QtCore.Qt.BlockingQueuedConnection)
                         thread_manager.quit_thread(self._thread_name)
                         thread_manager.join_thread(self._thread_name)
             else:
@@ -393,9 +390,6 @@ class LocalManagedModule(ManagedModule):
                                                     'deactivate',
                                                     QtCore.Qt.BlockingQueuedConnection)
                 finally:
-                    QtCore.QMetaObject.invokeMethod(self._instance,
-                                                    'move_to_main_thread',
-                                                    QtCore.Qt.BlockingQueuedConnection)
                     thread_manager.quit_thread(self._thread_name)
                     thread_manager.join_thread(self._thread_name)
             else:

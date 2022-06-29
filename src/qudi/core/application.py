@@ -339,18 +339,14 @@ class Qudi(QtCore.QObject):
             self._shutting_down = True
             if prompt:
                 locked_modules = False
-                broken_modules = False
                 for module in self.module_manager.values():
                     if module.is_busy:
                         locked_modules = True
-                    elif module.state == 'BROKEN':
-                        broken_modules = True
-                    if broken_modules and locked_modules:
                         break
 
                 if self.no_gui:
                     # command line prompt
-                    question = '\nSome modules are still locked. ' if locked_modules else '\n'
+                    question = '\nSome modules are still busy. ' if locked_modules else '\n'
                     if restart:
                         question += 'Do you really want to restart qudi (y/N)?: '
                     else:

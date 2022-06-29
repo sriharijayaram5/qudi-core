@@ -306,7 +306,7 @@ class Gui(QtCore.QObject):
         """ Display a dialog, asking the user to confirm shutdown.
         """
         if modules_locked:
-            msg = 'Some qudi modules are locked right now.\n' \
+            msg = 'Some qudi modules are busy right now.\n' \
                   'Do you really want to quit and force modules to deactivate?'
         else:
             msg = 'Do you really want to quit?'
@@ -322,7 +322,7 @@ class Gui(QtCore.QObject):
         """ Display a dialog, asking the user to confirm restart.
         """
         if modules_locked:
-            msg = 'Some qudi modules are locked right now.\n' \
+            msg = 'Some qudi modules are busy right now.\n' \
                   'Do you really want to restart and force modules to deactivate?'
         else:
             msg = 'Do you really want to restart?'
