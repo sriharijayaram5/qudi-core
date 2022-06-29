@@ -128,7 +128,8 @@ class QudiMainGui(GuiBase):
         self.mw.action_view_default.triggered.connect(self.reset_default_layout)
         # Connect signals from manager
         qudi_main.configuration.sigConfigChanged.connect(self.update_config_widget)
-        qudi_main.module_manager.sigManagedModulesChanged.connect(self.update_configured_modules)
+        qudi_main.module_manager.sigManagedModulesChanged.connect(self.update_configured_modules,
+                                                                  QtCore.Qt.QueuedConnection)
         qudi_main.module_manager.sigModuleStateChanged.connect(self.update_module_state)
         qudi_main.module_manager.sigModuleAppDataChanged.connect(self.update_module_app_data)
         # Settings dialog

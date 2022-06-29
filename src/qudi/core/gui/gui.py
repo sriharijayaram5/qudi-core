@@ -156,7 +156,8 @@ class Gui(QtCore.QObject):
                                                            QtCore.Qt.QueuedConnection)
         self.system_tray_icon.restartAction.triggered.connect(qudi_instance.restart,
                                                               QtCore.Qt.QueuedConnection)
-        qudi_instance.module_manager.sigModuleStateChanged.connect(self._tray_module_action_changed)
+        qudi_instance.module_manager.sigModuleStateChanged.connect(self._tray_module_action_changed,
+                                                                   QtCore.Qt.QueuedConnection)
         self.show_system_tray_icon()
 
     @classmethod
@@ -381,7 +382,10 @@ class Gui(QtCore.QObject):
             else:
                 mod_manager = ModuleManager.instance()
                 try:
-                    module_inst = mod_manager[module_name].instance
-                except KeyError:
+                    module_inst = mod_manager.get_module_instance(module_name)
+                except ValueError:
                     return
-                self.system_tray_icon.add_action(module_name, module_inst.show)
+                try:
+                    self.system_tray_icon.add_action(module_name, module_inst.show)
+                except ValueError:
+                    pass

@@ -402,7 +402,7 @@ class LocalManagedModule(ManagedModule):
             else:
                 self._instance.module_state.deactivate()
 
-            # QtCore.QCoreApplication.instance().processEvents()  # ToDo: Is this still needed?
+            QtCore.QCoreApplication.instance().processEvents()
 
             # Disconnect modules from this module
             self._instance.disconnect_modules()
@@ -432,6 +432,10 @@ class LocalManagedModule(ManagedModule):
             pass
         finally:
             self.sigAppDataChanged.emit(self, self.has_app_data)
+
+    @QtCore.Slot(object)
+    def _state_change_callback(self, fysom_event) -> None:
+        self.sigStateChanged.emit(self, fysom_event.dst)
 
 
 class RemoteManagedModule(ManagedModule):
@@ -630,25 +634,7 @@ class RemoteManagedModule(ManagedModule):
             self.__state_poll_timer.start()
 
 
-class _ModuleManagerMappingInterface:
-    """
-    """
-
-
-    def __getitem__(self, key):
-        with self._lock:
-            return self._modules[key]
-
-    def __setitem__(self, key, value):
-        if value.name != key:
-            raise NameError('ManagedModule name property does not match key')
-        self.add_module(value, allow_overwrite=True)
-
-    def __delitem__(self, key):
-        self.remove_module(key)
-
-
-class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
+class ModuleManager(QtCore.QObject):
     """
     """
     _instance = None  # Only class instance created will be stored here as weakref
@@ -735,8 +721,8 @@ class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
         if module is None and not ignore_missing:
             raise KeyError(f'No module with name "{module_name}" registered.')
         module.deactivate()
-        module.sigStateChanged.disconnect(self._module_state_change_callback)
-        module.sigAppDataChanged.disconnect(self._module_appdata_change_callback)
+        module.sigStateChanged.disconnect()
+        module.sigAppDataChanged.disconnect()
         if isinstance(module, LocalManagedModule) and module.allow_remote:
             try:
                 remote_modules_server = self._qudi_main_ref().remote_modules_server
@@ -792,6 +778,14 @@ class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
                 )
             except AttributeError:
                 pass
+
+    def get_module_instance(self, module_name: str) -> Union[None, ManagedModule]:
+        with self._lock:
+            module = self._modules.get(module_name, None)
+            if module is None:
+                raise ValueError(f'No module named "{module_name}" found in managed qudi modules. '
+                                 f'Module activation aborted.')
+            return module.instance
 
     def activate_module(self, module_name: str) -> None:
         with self._lock:
@@ -854,7 +848,7 @@ class ModuleManager(_ModuleManagerMappingInterface, QtCore.QObject):
         with self._lock:
             for mod_name in list(self._modules):
                 self._remove_module(mod_name, ignore_missing=True)
-        self.sigManagedModulesChanged.emit()
+            self.sigManagedModulesChanged.emit()
 
     @QtCore.Slot(object, str)
     def _module_state_change_callback(self, module: ManagedModule, state: str) -> None:
