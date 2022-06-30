@@ -641,7 +641,7 @@ class ModuleManager(QtCore.QObject):
 
     sigModuleStateChanged = QtCore.Signal(str, str, str)
     sigModuleAppDataChanged = QtCore.Signal(str, str, bool)
-    sigManagedModulesChanged = QtCore.Signal()
+    sigManagedModulesChanged = QtCore.Signal(dict)
 
     def __new__(cls, *args, **kwargs):
         with cls._lock:
@@ -686,13 +686,17 @@ class ModuleManager(QtCore.QObject):
             return list(self._modules)
 
     @property
-    def module_names_by_base(self) -> Dict[str, List[str]]:
+    def module_infos(self) -> Dict[str, Dict[str, Union[str, bool]]]:
         with self._lock:
-            return {
-                'gui'     : [name for name, mod in self._modules.items() if mod.base == 'gui'],
-                'logic'   : [name for name, mod in self._modules.items() if mod.base == 'logic'],
-                'hardware': [name for name, mod in self._modules.items() if mod.base == 'hardware']
-            }
+            return self._module_infos
+
+    @property
+    def _module_infos(self) -> Dict[str, Dict[str, Union[str, bool]]]:
+        return {name: {'base'        : mod.base,
+                       'state'       : mod.state,
+                       'has_app_data': mod.has_app_data,
+                       'is_remote'   : isinstance(mod, RemoteManagedModule)}
+                for name, mod in self._modules.items()}
 
     @property
     def module_states(self) -> Dict[str, str]:
@@ -713,7 +717,8 @@ class ModuleManager(QtCore.QObject):
     def remove_module(self, module_name: str, ignore_missing: Optional[bool] = False) -> None:
         with self._lock:
             self._remove_module(module_name, ignore_missing)
-        self.sigManagedModulesChanged.emit()
+            module_infos = self._module_infos
+        self.sigManagedModulesChanged.emit(module_infos)
 
     def _remove_module(self, module_name: str, ignore_missing: Optional[bool] = False) -> None:
         module = self._modules.pop(module_name, None)
@@ -740,7 +745,8 @@ class ModuleManager(QtCore.QObject):
                    ) -> None:
         with self._lock:
             self._add_module(name, base, configuration, allow_overwrite)
-        self.sigManagedModulesChanged.emit()
+            module_infos = self._module_infos
+        self.sigManagedModulesChanged.emit(module_infos)
 
     def _add_module(self,
                     name: str,
@@ -847,7 +853,8 @@ class ModuleManager(QtCore.QObject):
         with self._lock:
             for mod_name in list(self._modules):
                 self._remove_module(mod_name, ignore_missing=True)
-        self.sigManagedModulesChanged.emit()
+            module_infos = self._module_infos
+        self.sigManagedModulesChanged.emit(module_infos)
 
     @QtCore.Slot(object, str)
     def _module_state_change_callback(self, module: ManagedModule, state: str) -> None:

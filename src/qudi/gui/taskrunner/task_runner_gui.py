@@ -72,7 +72,7 @@ class TaskRunnerGui(GuiBase):
 
     @QtCore.Slot()
     def _deactivate_self(self):
-        self._qudi_main.module_manager.deactivate_module(self._meta['name'])
+        self._qudi_main.module_manager.deactivate_module(self.module_name)
 
     def on_deactivate(self):
         """ Hide window and stop ipython console.
