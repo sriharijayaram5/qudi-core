@@ -58,9 +58,9 @@ class ModuleStateMachine(Fysom, QtCore.QObject):
         fsm_cfg = {'initial': 'deactivated',
                    'events': [{'name': 'activate', 'src': 'deactivated', 'dst': 'idle'},
                               {'name': 'deactivate', 'src': 'idle', 'dst': 'deactivated'},
-                              {'name': 'deactivate', 'src': 'busy', 'dst': 'deactivated'},
-                              {'name': 'lock', 'src': 'idle', 'dst': 'busy'},
-                              {'name': 'unlock', 'src': 'busy', 'dst': 'idle'}],
+                              {'name': 'deactivate', 'src': 'locked', 'dst': 'deactivated'},
+                              {'name': 'lock', 'src': 'idle', 'dst': 'locked'},
+                              {'name': 'unlock', 'src': 'locked', 'dst': 'idle'}],
                    'callbacks': callbacks}
 
         # Initialise state machine:

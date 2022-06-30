@@ -126,7 +126,7 @@ class ManagedModule(QtCore.QObject, metaclass=ABCQObjectMeta):
 
     @property
     def is_busy(self) -> bool:
-        return self.state == 'busy'
+        return self.state == 'locked'
 
     def register_dependent_module(self, module: object) -> None:
         if self.is_active:

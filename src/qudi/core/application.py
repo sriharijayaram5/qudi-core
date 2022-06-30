@@ -340,7 +340,7 @@ class Qudi(QtCore.QObject):
             self._shutting_down = True
             if prompt:
                 locked_modules = any(
-                    state == 'busy' for state in self.module_manager.module_states.values()
+                    state == 'locked' for state in self.module_manager.module_states.values()
                 )
 
                 if self.no_gui:
