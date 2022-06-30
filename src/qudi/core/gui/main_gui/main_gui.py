@@ -91,7 +91,7 @@ class QudiMainGui(GuiBase):
         self._connect_signals()
 
         self.keep_settings()
-        self.update_configured_modules()
+        self.mw.module_widget.update_modules(self._qudi_main.module_manager.module_infos)
         self.update_config_widget()
 
         # IPython console widget
