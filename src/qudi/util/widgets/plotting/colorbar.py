@@ -68,10 +68,10 @@ class ColorBarWidget(QtWidgets.QWidget):
     sigPercentilesChanged = QtCore.Signal(tuple)  # (low_percentile, high_percentile)
     sigModeChanged = QtCore.Signal(object)
 
-    def __init__(self, *args, unit=None, label=None, absolute_range=None, percentile_range=None,
+    def __init__(self, *args, unit=None, label=None, absolute_range=None, percentile_range=None, colorscale=None,
                  mode=ColorBarMode.PERCENTILE, **kwargs):
         super().__init__(*args, **kwargs)
-
+        self.cmap = ColorScaleInferno if colorscale is None else colorscale().colormap
         self.min_spinbox = ScienDSpinBox()
         self.min_spinbox.setSizePolicy(QtWidgets.QSizePolicy.Preferred,
                                        QtWidgets.QSizePolicy.Fixed)
@@ -114,14 +114,14 @@ class ColorBarWidget(QtWidgets.QWidget):
         else:
             self.low_percentile_spinbox.setRange(0, 100)
             self.high_percentile_spinbox.setRange(0, 100)
-
+ 
         grad = QtGui.QLinearGradient(0, 0, 0, 1)
         grad.setCoordinateMode(QtGui.QGradient.ObjectMode)
-        for stop, color in zip(*ColorScaleInferno().colormap.getStops('byte')):
+        for stop, color in zip(*self.cmap.getStops('byte')):
             grad.setColorAt(stop, QtGui.QColor(*color))
         self._cb_brush = mkBrush(QtGui.QBrush(grad))
 
-        self.colorbar = ColorBarItem()
+        self.colorbar = ColorBarItem(cmap = self.cmap)
         self.cb_plot_widget = PlotWidget()
         self.cb_plot_widget.hideButtons()
         self.cb_plot_widget.setMinimumWidth(75)

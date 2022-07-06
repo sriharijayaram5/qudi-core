@@ -47,8 +47,11 @@ class DataImageItem(_ImageItem):
 
     def __init__(self, image=None, **kwargs):
         # Change default color scale to qudi default
-        if kwargs.get('lut', None) is None:
+        if kwargs.get('colorscale', None) is not None:
+            kwargs['lut'] = kwargs['colorscale']().lut
+        elif kwargs.get('lut', None) is None:
             kwargs['lut'] = _Colorscale().lut
+            
         super().__init__(image, **kwargs)
         self._percentiles = None
 

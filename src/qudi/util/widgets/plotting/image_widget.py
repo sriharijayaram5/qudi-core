@@ -38,15 +38,15 @@ class ImageWidget(QtWidgets.QWidget):
     """
     _plot_widget_type = _PlotWidget
 
-    def __init__(self, parent: Optional[QtWidgets.QWidget] = None, **kwargs):
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None, colorscale = None, **kwargs):
         super().__init__(parent=parent)
 
         self.plot_widget = self._plot_widget_type(**kwargs)
-        self.image_item = _DataImageItem()
+        self.image_item = _DataImageItem(colorscale = colorscale)
         self.plot_widget.addItem(self.image_item)
         self.plot_widget.setAspectLocked(lock=True, ratio=1.0)
 
-        self.colorbar_widget = _ColorBarWidget()
+        self.colorbar_widget = _ColorBarWidget(colorscale = colorscale)
         if self.colorbar_widget.mode == _ColorBarWidget.ColorBarMode.PERCENTILE:
             self.image_item.set_percentiles(self.colorbar_widget.percentiles)
         else:
