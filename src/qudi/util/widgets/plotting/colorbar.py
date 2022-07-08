@@ -68,10 +68,10 @@ class ColorBarWidget(QtWidgets.QWidget):
     sigPercentilesChanged = QtCore.Signal(tuple)  # (low_percentile, high_percentile)
     sigModeChanged = QtCore.Signal(object)
 
-    def __init__(self, *args, unit=None, label=None, absolute_range=None, percentile_range=None,
+    def __init__(self, *args, unit=None, label=None, absolute_range=None, colorscale=None, percentile_range=None,
                  mode=ColorBarMode.PERCENTILE, **kwargs):
         super().__init__(*args, **kwargs)
-        self.cmap = ColorScaleInferno if colorscale is None else colorscale().colormap
+        self.cmap = ColorScaleInferno().colormap if colorscale is None else colorscale().colormap
 
         self.min_spinbox = ScienDSpinBox()
         self.min_spinbox.setSizePolicy(QtWidgets.QSizePolicy.Preferred,
