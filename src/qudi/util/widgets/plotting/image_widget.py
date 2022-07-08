@@ -38,7 +38,7 @@ class ImageWidget(QtWidgets.QWidget):
     """
     _plot_widget_type = _PlotWidget
 
-    def __init__(self, parent: Optional[QtWidgets.QWidget] = None, **kwargs):
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None, colorscale=None, **kwargs):
         super().__init__(parent=parent)
 
         self.plot_widget = self._plot_widget_type(**kwargs)
